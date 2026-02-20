@@ -3,5 +3,6 @@ pandas
 numpy
 plotly
 PyPortfolioOpt
+scikit-learn
 vnstock
 matplotlib
