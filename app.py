@@ -18,39 +18,51 @@ DEFAULT_TICKERS = [
 LOOKBACK_DAYS = 252 # 1 year trading days
 REBALANCE_FREQ = 21 # 1 month trading days
 
-# --- Caching Data Functions ---
-# We cache these so Streamlit doesn't re-download years of data every time the user moves a slider
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_data(tickers, start_date, end_date):
     combined_data = pd.DataFrame()
     for ticker in tickers:
+        df = None
+        # Streamlit cloud IPs often get blocked, try multiple sources
+        for source in ['VCI', 'TCBS', 'SSI', 'VND']:
+            try:
+                stock = Vnstock().stock(symbol=ticker, source=source)
+                df = stock.quote.history(start=start_date, end=end_date)
+                if df is not None and not df.empty:
+                    df['time'] = pd.to_datetime(df['time'])
+                    df.set_index('time', inplace=True)
+                    df.sort_index(inplace=True)
+                    combined_data[ticker] = df['close']
+                    break # Success!
+            except Exception as e:
+                continue # Try next source
+                
+        if df is None or df.empty:
+            st.toast(f"Error fetching data for {ticker} from all sources.")
+            st.sidebar.error(f"Failed to fetch: {ticker}")
+            
+    if not combined_data.empty:
+        combined_data.ffill(inplace=True)
+        combined_data.dropna(inplace=True) 
+    return combined_data
+
+@st.cache_data(ttl=timedelta(hours=6))
+def fetch_benchmark(start_date, end_date):
+    last_error = ""
+    for source in ['VCI', 'TCBS', 'SSI', 'VND']:
         try:
-            stock = Vnstock().stock(symbol=ticker, source='VCI')
+            stock = Vnstock().stock(symbol='VNINDEX', source=source)
             df = stock.quote.history(start=start_date, end=end_date)
             if df is not None and not df.empty:
                 df['time'] = pd.to_datetime(df['time'])
                 df.set_index('time', inplace=True)
                 df.sort_index(inplace=True)
-                combined_data[ticker] = df['close']
+                return df['close']
         except Exception as e:
-            st.toast(f"Error fetching data for {ticker}")
+            last_error = str(e)
+            continue
             
-    combined_data.ffill(inplace=True)
-    combined_data.dropna(inplace=True) 
-    return combined_data
-
-@st.cache_data(ttl=timedelta(hours=6))
-def fetch_benchmark(start_date, end_date):
-    try:
-        stock = Vnstock().stock(symbol='VNINDEX', source='VCI')
-        df = stock.quote.history(start=start_date, end=end_date)
-        if df is not None and not df.empty:
-            df['time'] = pd.to_datetime(df['time'])
-            df.set_index('time', inplace=True)
-            df.sort_index(inplace=True)
-            return df['close']
-    except Exception as e:
-        st.error("Failed to fetch VNINDEX benchmark")
+    st.error(f"Failed to fetch VNINDEX benchmark from all sources. Last error: {last_error}")
     return None
 
 def optimize_portfolio(prices_df, max_weight):
