@@ -2,6 +2,6 @@ streamlit
 pandas
 numpy
 plotly
-pypfopt
+PyPortfolioOpt
 vnstock
 matplotlib
