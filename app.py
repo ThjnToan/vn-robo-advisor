@@ -18,6 +18,8 @@ DEFAULT_TICKERS = [
 LOOKBACK_DAYS = 252 # 1 year trading days
 REBALANCE_FREQ = 21 # 1 month trading days
 
+import os
+
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_data(tickers, start_date, end_date):
     combined_data = pd.DataFrame()
@@ -37,9 +39,16 @@ def fetch_data(tickers, start_date, end_date):
             except Exception as e:
                 continue # Try next source
                 
+        # API Failed, load from our bundled CSV
         if df is None or df.empty:
-            st.toast(f"Error fetching data for {ticker} from all sources.")
-            st.sidebar.error(f"Failed to fetch: {ticker}")
+            local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
+            if os.path.exists(local_path):
+                csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
+                if ticker in csv_data.columns:
+                    mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
+                    combined_data[ticker] = csv_data.loc[mask, ticker]
+            else:
+                st.sidebar.error(f"Failed to fetch: {ticker} and no local fallback found.")
             
     if not combined_data.empty:
         combined_data.ffill(inplace=True)
@@ -48,10 +57,10 @@ def fetch_data(tickers, start_date, end_date):
 
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_benchmark(start_date, end_date):
-    last_error = ""
+    # Try API for the E1VFVN30 ETF as our VN-Index proxy
     for source in ['VCI', 'TCBS', 'SSI', 'VND']:
         try:
-            stock = Vnstock().stock(symbol='VNINDEX', source=source)
+            stock = Vnstock().stock(symbol='E1VFVN30', source=source)
             df = stock.quote.history(start=start_date, end=end_date)
             if df is not None and not df.empty:
                 df['time'] = pd.to_datetime(df['time'])
@@ -59,10 +68,17 @@ def fetch_benchmark(start_date, end_date):
                 df.sort_index(inplace=True)
                 return df['close']
         except Exception as e:
-            last_error = str(e)
             continue
             
-    st.error(f"Failed to fetch VNINDEX benchmark from all sources. Last error: {last_error}")
+    # Fallback to local CSV
+    local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
+    if os.path.exists(local_path):
+        csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
+        if 'E1VFVN30' in csv_data.columns:
+            mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
+            return csv_data.loc[mask, 'E1VFVN30']
+            
+    st.error("Failed to fetch E1VFVN30 benchmark from API and local storage.")
     return None
 
 def optimize_portfolio(prices_df, max_weight):
@@ -228,9 +244,9 @@ if run_sim or not st.session_state.get('sim_run'):
     st.subheader("Performance Summary")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Final Portfolio Value", f"{final_nav:,.0f} ₫", f"{final_nav - initial_cap:,.0f} ₫")
-    col2.metric("Strategy Return", f"{total_return * 100:.2f}%", f"{(total_return - bench_return) * 100:.2f}% vs VN-Index", delta_color="normal")
-    col3.metric("Max Drawdown (Risk)", f"{metrics['port_mdd'] * 100:.2f}%", f"{(metrics['port_mdd'] - metrics['bench_mdd']) * 100:.2f}% vs VN-Index", delta_color="inverse")
-    col4.metric("Sharpe Ratio", f"{metrics['port_sharpe']:.2f}", f"{metrics['port_sharpe'] - metrics['bench_sharpe']:.2f} vs VN-Index", delta_color="normal")
+    col2.metric("Strategy Return", f"{total_return * 100:.2f}%", f"{(total_return - bench_return) * 100:.2f}% vs ETF Benchmark", delta_color="normal")
+    col3.metric("Max Drawdown (Risk)", f"{metrics['port_mdd'] * 100:.2f}%", f"{(metrics['port_mdd'] - metrics['bench_mdd']) * 100:.2f}% vs ETF Benchmark", delta_color="inverse")
+    col4.metric("Sharpe Ratio", f"{metrics['port_sharpe']:.2f}", f"{metrics['port_sharpe'] - metrics['bench_sharpe']:.2f} vs ETF Benchmark", delta_color="normal")
 
     st.divider()
 
@@ -238,10 +254,10 @@ if run_sim or not st.session_state.get('sim_run'):
     visual_col, pie_col = st.columns([2, 1])
 
     with visual_col:
-        st.subheader("Equity Curve vs Benchmark")
+        st.subheader("Equity Curve vs Benchmark (VN30 ETF)")
         fig_line = go.Figure()
         fig_line.add_trace(go.Scatter(x=opt_val.index, y=opt_val, mode='lines', name='Dynamic Portfolio', line=dict(color='#00CC96', width=2)))
-        fig_line.add_trace(go.Scatter(x=bench_val.index, y=bench_val, mode='lines', name='VN-Index', line=dict(color='#636EFA', width=2)))
+        fig_line.add_trace(go.Scatter(x=bench_val.index, y=bench_val, mode='lines', name='VN30 ETF (E1VFVN30)', line=dict(color='#636EFA', width=2)))
         
         fig_line.update_layout(
             yaxis_title="Portfolio Value (VND)",
