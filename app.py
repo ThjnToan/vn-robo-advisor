@@ -23,32 +23,18 @@ import os
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_data(tickers, start_date, end_date):
     combined_data = pd.DataFrame()
-    for ticker in tickers:
-        df = None
-        # Streamlit cloud IPs often get blocked, try multiple sources
-        for source in ['VCI', 'TCBS', 'SSI', 'VND']:
-            try:
-                stock = Vnstock().stock(symbol=ticker, source=source)
-                df = stock.quote.history(start=start_date, end=end_date)
-                if df is not None and not df.empty:
-                    df['time'] = pd.to_datetime(df['time'])
-                    df.set_index('time', inplace=True)
-                    df.sort_index(inplace=True)
-                    combined_data[ticker] = df['close']
-                    break # Success!
-            except Exception as e:
-                continue # Try next source
-                
-        # API Failed, load from our bundled CSV
-        if df is None or df.empty:
-            local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
-            if os.path.exists(local_path):
-                csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
-                if ticker in csv_data.columns:
-                    mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
-                    combined_data[ticker] = csv_data.loc[mask, ticker]
+    local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
+    
+    if os.path.exists(local_path):
+        csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
+        for ticker in tickers:
+            if ticker in csv_data.columns:
+                mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
+                combined_data[ticker] = csv_data.loc[mask, ticker]
             else:
-                st.sidebar.error(f"Failed to fetch: {ticker} and no local fallback found.")
+                st.sidebar.error(f"Failed to fetch {ticker}: Not in local database.")
+    else:
+        st.error("market_data.csv not found! Please run fetch_historical_data.py first.")
             
     if not combined_data.empty:
         combined_data.ffill(inplace=True)
@@ -57,20 +43,7 @@ def fetch_data(tickers, start_date, end_date):
 
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_benchmark(start_date, end_date):
-    # Try API for the E1VFVN30 ETF as our VN-Index proxy
-    for source in ['VCI', 'TCBS', 'SSI', 'VND']:
-        try:
-            stock = Vnstock().stock(symbol='E1VFVN30', source=source)
-            df = stock.quote.history(start=start_date, end=end_date)
-            if df is not None and not df.empty:
-                df['time'] = pd.to_datetime(df['time'])
-                df.set_index('time', inplace=True)
-                df.sort_index(inplace=True)
-                return df['close']
-        except Exception as e:
-            continue
-            
-    # Fallback to local CSV
+    # Skip API, use local proxy
     local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
     if os.path.exists(local_path):
         csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
@@ -78,7 +51,7 @@ def fetch_benchmark(start_date, end_date):
             mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
             return csv_data.loc[mask, 'E1VFVN30']
             
-    st.error("Failed to fetch E1VFVN30 benchmark from API and local storage.")
+    st.error("Failed to fetch E1VFVN30 benchmark from local storage.")
     return None
 
 def optimize_portfolio(prices_df, max_weight):
