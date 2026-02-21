@@ -27,6 +27,47 @@ DEFAULT_TICKERS = [
 LOOKBACK_DAYS = 252 # 1 year trading days
 TX_FEE_RATE = 0.0015 # 0.15%
 
+SECTOR_MAPPER = {
+    # Financials (Banks & Brokerages)
+    "ACB": "Financials", "BID": "Financials", "BVH": "Financials", "CTG": "Financials",
+    "EIB": "Financials", "HDB": "Financials", "LPB": "Financials", "MBB": "Financials",
+    "MSB": "Financials", "OCB": "Financials", "SHB": "Financials", "SSB": "Financials",
+    "SSI": "Financials", "STB": "Financials", "TCB": "Financials", "TPB": "Financials",
+    "VCB": "Financials", "VCI": "Financials", "VIB": "Financials", "VIX": "Financials",
+    "VND": "Financials", "VPB": "Financials",
+    
+    # Real Estate & Construction
+    "BCG": "Real Estate", "BCM": "Real Estate", "CII": "Real Estate", "CRE": "Real Estate",
+    "CTD": "Real Estate", "DIG": "Real Estate", "DXG": "Real Estate", "FCN": "Real Estate",
+    "HDC": "Real Estate", "HDG": "Real Estate", "HHV": "Real Estate", "ITA": "Real Estate",
+    "KBC": "Real Estate", "KDH": "Real Estate", "NLG": "Real Estate", "NVL": "Real Estate",
+    "PDR": "Real Estate", "SJS": "Real Estate", "SZC": "Real Estate", "TCH": "Real Estate",
+    "VCG": "Real Estate", "VHM": "Real Estate", "VIC": "Real Estate", "VPI": "Real Estate",
+    "VRE": "Real Estate",
+    
+    # Materials (Steel, Chemicals, Rubber)
+    "BMP": "Materials", "DCM": "Materials", "DGC": "Materials", "DPM": "Materials",
+    "GVR": "Materials", "HPG": "Materials", "HSG": "Materials", "HT1": "Materials",
+    "NKG": "Materials", "PHR": "Materials",
+    
+    # Consumer Discretionary & Staples
+    "DBC": "Consumer", "DGW": "Consumer", "FRT": "Consumer", "KDC": "Consumer",
+    "MSN": "Consumer", "MWG": "Consumer", "PAN": "Consumer", "PNJ": "Consumer",
+    "SAB": "Consumer", "SBT": "Consumer", "TCM": "Consumer", "VHC": "Consumer",
+    "VNM": "Consumer",
+    
+    # Industrials & Logistics
+    "GMD": "Industrials", "HAH": "Industrials", "PTB": "Industrials", "PVT": "Industrials",
+    "REE": "Industrials", "SAM": "Industrials", "SCS": "Industrials", "VJC": "Industrials",
+    
+    # Energy & Utilities
+    "GAS": "Utilities", "GEX": "Utilities", "NT2": "Utilities", "PC1": "Utilities",
+    "PLX": "Utilities", "POW": "Utilities", "PVD": "Utilities", "VSH": "Utilities",
+    
+    # Technology
+    "CMG": "Technology", "FPT": "Technology"
+}
+
 BASE_DIR = os.path.dirname(__file__)
 DATA_FILE = os.path.join(BASE_DIR, "market_data.csv")
 STATE_FILE = os.path.join(BASE_DIR, "portfolio_state.json")
@@ -119,23 +160,34 @@ def calculate_current_holdings(ledger):
     # Filter out empty positions
     return {k: v for k, v in holdings.items() if v > 0}
 
+    return {k: v for k, v in holdings.items() if v > 0}
+
 # --- Markowitz Optimization Engine ---
-def optimize_portfolio(prices_df, target_tickers, max_weight):
+def optimize_portfolio(prices_df, target_tickers, max_weight, max_sector_weight=1.0):
     mu = expected_returns.mean_historical_return(prices_df[target_tickers], frequency=252)
     S = risk_models.sample_cov(prices_df[target_tickers], frequency=252)
     
     ef = EfficientFrontier(mu, S, weight_bounds=(0, max_weight))
+    
+    # Enforce Sector Constraints
+    if max_sector_weight < 1.0:
+        sector_lower = {sector: 0.0 for sector in set(SECTOR_MAPPER.values())}
+        sector_upper = {sector: max_sector_weight for sector in set(SECTOR_MAPPER.values())}
+        ef.add_sector_constraints(SECTOR_MAPPER, sector_lower, sector_upper)
+        
     try:
         raw_weights = ef.max_sharpe()
     except Exception:
         ef = EfficientFrontier(mu, S, weight_bounds=(0, max_weight))
+        if max_sector_weight < 1.0:
+            ef.add_sector_constraints(SECTOR_MAPPER, sector_lower, sector_upper)
         raw_weights = ef.min_volatility()
         
     # Apply a strict 5% cutoff to zero-out tiny insignificant allocations 
     # and force the optimizer to concentrate on the absolute best stocks.
     return ef.clean_weights(cutoff=0.05)
 
-def optimize_black_litterman(prices_df, target_tickers, max_weight, tactical_views):
+def optimize_black_litterman(prices_df, target_tickers, max_weight, tactical_views, max_sector_weight=1.0):
     """
     Runs the Black-Litterman robust optimization model blending historical 
     covariance with the user's subjective tactical views.
@@ -158,7 +210,7 @@ def optimize_black_litterman(prices_df, target_tickers, max_weight, tactical_vie
             
     if not view_dict:
         # Fallback to standard markowitz if no valid views
-        return optimize_portfolio(prices_df, target_tickers, max_weight)
+        return optimize_portfolio(prices_df, target_tickers, max_weight, max_sector_weight)
         
     bl = black_litterman.BlackLittermanModel(S, pi=market_prior, absolute_views=view_dict)
     posterior_rets = bl.bl_returns()
@@ -166,10 +218,19 @@ def optimize_black_litterman(prices_df, target_tickers, max_weight, tactical_vie
     
     # 3. Maximize Sharpe on the Posterior Distribution
     ef = EfficientFrontier(posterior_rets, posterior_cov, weight_bounds=(0, max_weight))
+    
+    # Enforce Sector Constraints
+    if max_sector_weight < 1.0:
+        sector_lower = {sector: 0.0 for sector in set(SECTOR_MAPPER.values())}
+        sector_upper = {sector: max_sector_weight for sector in set(SECTOR_MAPPER.values())}
+        ef.add_sector_constraints(SECTOR_MAPPER, sector_lower, sector_upper)
+        
     try:
         raw_weights = ef.max_sharpe()
     except Exception:
         ef = EfficientFrontier(posterior_rets, posterior_cov, weight_bounds=(0, max_weight))
+        if max_sector_weight < 1.0:
+            ef.add_sector_constraints(SECTOR_MAPPER, sector_lower, sector_upper)
         raw_weights = ef.min_volatility()
         
     return ef.clean_weights(cutoff=0.05)
@@ -339,7 +400,10 @@ with st.sidebar:
     st.divider()
     st.subheader("Robo-Advisor Constraints")
     max_weight_pct = st.slider("Max Allocation per Stock", min_value=10, max_value=100, value=30, step=5, format="%d%%")
-    max_weight_dec = max_weight_pct / 100.0
+    max_weight = max_weight_pct / 100.0
+    
+    max_sector_pct = st.slider("Max Allocation per Sector", min_value=max_weight_pct, max_value=100, value=100, step=5, format="%d%%")
+    max_sector_weight = max_sector_pct / 100.0
     
     if "ticker_selector" not in st.session_state:
         st.session_state.ticker_selector = ["HPG", "VCB", "VHM", "REE", "MBB", "TCB"]
@@ -569,10 +633,10 @@ with tab3:
     use_bl = st.toggle("Enable Black-Litterman Optimization", value=False)
     
     if st.button("🚀 Run Monthly Rebalance Engine", use_container_width=True):
-        if len(selected_tickers) < 2:
-            st.error("Select at least 2 stocks in the universe sidebar.")
+        if not selected_tickers:
+            st.toast("Please select at least one ETF/Stock in the sidebar.")
         else:
-            with st.spinner("Analyzing market data and calculating Maximum Sharpe Ratio..."):
+            with st.spinner("Crunching historical covariance & running optimization..."):
                 # Filter out any selected tickers that failed to download
                 valid_tickers = [t for t in selected_tickers if t in market_db.columns]
                 
@@ -585,9 +649,9 @@ with tab3:
                     # Get Target Weights
                     if use_bl and not st.session_state.tactical_views.empty:
                         views_list = st.session_state.tactical_views.to_dict('records')
-                        target_w = optimize_black_litterman(train_data, valid_tickers, max_weight_dec, views_list)
+                        target_w = optimize_black_litterman(train_data, valid_tickers, max_weight, views_list, max_sector_weight)
                     else:
-                        target_w = optimize_portfolio(train_data, valid_tickers, max_weight_dec)
+                        target_w = optimize_portfolio(train_data, valid_tickers, max_weight, max_sector_weight)
                 
                 # Execute Virtual Trades
                 execute_rebalance(market_db, state, ledger, target_w)
