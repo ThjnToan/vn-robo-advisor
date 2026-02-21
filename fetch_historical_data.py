@@ -3,12 +3,15 @@ from datetime import datetime, timedelta
 from vnstock import Vnstock
 import os
 
-DEFAULT_TICKERS = [
-    "FPT", "HPG", "VCB", "VHM", "MWG", "REE", "MBB", "VNM", "TCB", "SSI",
-    "VIC", "VRE", "MSN", "GAS", "SAB", "CTG", "BID", "VJC", "PNJ", "VPB", "E1VFVN30"
-]
+# Import the massive universe configuration dynamically from the main app
+from app import DEFAULT_TICKERS
 
 def fetch_and_save():
+    # We want to explicitly ensure the benchmark is always fetched natively regardless of app config
+    tickers_to_fetch = DEFAULT_TICKERS.copy()
+    if "E1VFVN30" not in tickers_to_fetch:
+        tickers_to_fetch.append("E1VFVN30")
+        
     end_date = datetime.today()
     start_date = end_date - timedelta(days=5*365) # 5 years just to be safe
     
@@ -18,7 +21,7 @@ def fetch_and_save():
     combined_data = pd.DataFrame()
     print(f"Fetching data from {start_str} to {end_str}...")
     
-    for ticker in DEFAULT_TICKERS:
+    for ticker in tickers_to_fetch:
         print(f"Fetching: {ticker}")
         df = None
         for source in ['VCI', 'TCBS', 'SSI', 'VND']:

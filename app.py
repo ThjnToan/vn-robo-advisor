@@ -5,232 +5,382 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
-from vnstock import Vnstock
+import os
+import json
 
 # --- Page Configuration ---
-st.set_page_config(page_title="VN Robo-Advisor", page_icon="📈", layout="wide")
+st.set_page_config(page_title="VN Robo-Advisor Live", page_icon="📈", layout="wide")
 
-# --- Default Constants ---
+# --- Constants & Paths ---
 DEFAULT_TICKERS = [
-    "FPT", "HPG", "VCB", "VHM", "MWG", "REE", "MBB", "VNM", "TCB", "SSI",
-    "VIC", "VRE", "MSN", "GAS", "SAB", "CTG", "BID", "VJC", "PNJ", "VPB"
+    "ACB", "BCG", "BCM", "BID", "BMP", "BVH", "CII", "CMG", "CRE", "CTD", 
+    "CTG", "DBC", "DCM", "DGC", "DGW", "DIG", "DPM", "DXG", "EIB", "FCN", 
+    "FPT", "FRT", "GAS", "GEX", "GMD", "GVR", "HAG", "HAH", "HDB", "HDC", 
+    "HDG", "HHV", "HPG", "HSG", "HT1", "ITA", "KBC", "KDC", "KDH", "LPB", 
+    "MBB", "MSB", "MSN", "MWG", "NKG", "NLG", "NT2", "NVL", "OCB", "PAN", 
+    "PC1", "PDR", "PHR", "PLX", "PNJ", "POW", "PTB", "PVD", "PVT", "REE", 
+    "SAB", "SAM", "SBT", "SCS", "SHB", "SJS", "SSB", "SSI", "STB", "SZC", 
+    "TCB", "TCH", "TCM", "TPB", "VCB", "VCG", "VCI", "VHC", "VHM", "VIB", 
+    "VIC", "VIX", "VJC", "VND", "VNM", "VPB", "VPI", "VRE", "VSH"
 ]
 LOOKBACK_DAYS = 252 # 1 year trading days
-REBALANCE_FREQ = 21 # 1 month trading days
+TX_FEE_RATE = 0.0015 # 0.15%
 
-import os
+BASE_DIR = os.path.dirname(__file__)
+DATA_FILE = os.path.join(BASE_DIR, "market_data.csv")
+STATE_FILE = os.path.join(BASE_DIR, "portfolio_state.json")
+LEDGER_FILE = os.path.join(BASE_DIR, "transactions.csv")
 
+# --- Core Data Functions ---
 @st.cache_data(ttl=timedelta(hours=6))
-def fetch_data(tickers, start_date, end_date):
-    combined_data = pd.DataFrame()
-    local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
+def load_market_data():
+    if not os.path.exists(DATA_FILE):
+        st.error("market_data.csv not found! Please run fetch_historical_data.py")
+        return pd.DataFrame()
+        
+    df = pd.read_csv(DATA_FILE, parse_dates=['time'], index_col='time')
     
-    if os.path.exists(local_path):
-        csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
-        for ticker in tickers:
-            if ticker in csv_data.columns:
-                mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
-                combined_data[ticker] = csv_data.loc[mask, ticker]
-            else:
-                st.sidebar.error(f"Failed to fetch {ticker}: Not in local database.")
-    else:
-        st.error("market_data.csv not found! Please run fetch_historical_data.py first.")
+    # Auto-Update Logic: Fetch missing days up to today
+    last_date = df.index.max()
+    today_date = pd.to_datetime(datetime.today().strftime('%Y-%m-%d'))
+    
+    if last_date < today_date:
+        start_fetch = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+        end_fetch = today_date.strftime('%Y-%m-%d')
+        
+        new_data = pd.DataFrame()
+        tickers_to_fetch = list(df.columns)
+        
+        # Don't show spinner if difference is just the weekend and it fails, but good to try.
+        for ticker in tickers_to_fetch:
+            for source in ['VCI', 'TCBS', 'SSI', 'VND']:
+                try:
+                    stock = Vnstock().stock(symbol=ticker, source=source)
+                    temp_df = stock.quote.history(start=start_fetch, end=end_fetch)
+                    if temp_df is not None and not temp_df.empty:
+                        temp_df['time'] = pd.to_datetime(temp_df['time'])
+                        temp_df.set_index('time', inplace=True)
+                        new_data[ticker] = temp_df['close']
+                        break
+                except Exception:
+                    continue
+                    
+        if not new_data.empty:
+            new_data.ffill(inplace=True)
+            combined = pd.concat([df, new_data])
+            combined = combined[~combined.index.duplicated(keep='last')]
+            combined.sort_index(inplace=True)
+            # Save raw vnstock values (shorthand thousands) back to CSV
+            combined.to_csv(DATA_FILE)
+            df = combined
+            st.toast(f"Market data auto-updated to {end_fetch}!")
             
-    if not combined_data.empty:
-        combined_data.ffill(inplace=True)
-        combined_data.dropna(inplace=True) 
-    return combined_data
+    # vnstock returns prices in shorthand thousands (e.g. 60). Convert to true VND (60,000)
+    df = df * 1000
+    return df
 
-@st.cache_data(ttl=timedelta(hours=6))
-def fetch_benchmark(start_date, end_date):
-    # Skip API, use local proxy
-    local_path = os.path.join(os.path.dirname(__file__), "market_data.csv")
-    if os.path.exists(local_path):
-        csv_data = pd.read_csv(local_path, parse_dates=['time'], index_col='time')
-        if 'E1VFVN30' in csv_data.columns:
-            mask = (csv_data.index >= pd.to_datetime(start_date)) & (csv_data.index <= pd.to_datetime(end_date))
-            return csv_data.loc[mask, 'E1VFVN30']
+# --- State Management ---
+def init_portfolio(initial_capital):
+    state = {
+        "start_date": datetime.today().strftime('%Y-%m-%d'),
+        "initial_capital": initial_capital,
+        "cash_balance": initial_capital,
+    }
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+        
+    df = pd.DataFrame(columns=['Date', 'Ticker', 'Action', 'Shares', 'Price', 'Value', 'Fee'])
+    df.to_csv(LEDGER_FILE, index=False)
+    st.success("Portfolio Initialized! Ready for the Robo-Advisor.")
+    return state
+
+def load_portfolio():
+    if os.path.exists(STATE_FILE) and os.path.exists(LEDGER_FILE):
+        with open(STATE_FILE, 'r') as f:
+            state = json.load(f)
+        ledger = pd.read_csv(LEDGER_FILE)
+        return state, ledger
+    return None, None
+
+def calculate_current_holdings(ledger):
+    if ledger.empty:
+        return {}
+    
+    holdings = {}
+    for _, row in ledger.iterrows():
+        ticker = row['Ticker']
+        shares = row['Shares']
+        if row['Action'] == 'BUY':
+            holdings[ticker] = holdings.get(ticker, 0) + shares
+        elif row['Action'] == 'SELL':
+            holdings[ticker] = holdings.get(ticker, 0) - shares
             
-    st.error("Failed to fetch E1VFVN30 benchmark from local storage.")
-    return None
+    # Filter out empty positions
+    return {k: v for k, v in holdings.items() if v > 0}
 
-def optimize_portfolio(prices_df, max_weight):
-    mu = expected_returns.mean_historical_return(prices_df, frequency=252)
-    S = risk_models.sample_cov(prices_df, frequency=252)
+# --- Markowitz Optimization Engine ---
+def optimize_portfolio(prices_df, target_tickers, max_weight):
+    mu = expected_returns.mean_historical_return(prices_df[target_tickers], frequency=252)
+    S = risk_models.sample_cov(prices_df[target_tickers], frequency=252)
     
     ef = EfficientFrontier(mu, S, weight_bounds=(0, max_weight))
     try:
         raw_weights = ef.max_sharpe()
-    except Exception as e:
+    except Exception:
         ef = EfficientFrontier(mu, S, weight_bounds=(0, max_weight))
         raw_weights = ef.min_volatility()
         
-    return ef.clean_weights()
+    # Apply a strict 5% cutoff to zero-out tiny insignificant allocations 
+    # and force the optimizer to concentrate on the absolute best stocks.
+    return ef.clean_weights(cutoff=0.05)
 
-def calculate_drawdown(returns_series):
-    cumulative = (1 + returns_series).cumprod()
-    peak = cumulative.expanding(min_periods=1).max()
-    drawdown = (cumulative / peak) - 1
-    return drawdown.min()
-
-def calculate_sharpe(returns_series, risk_free_rate=0.04):
-    # Assume 4% risk free rate for VN DKK
-    annualized_return = returns_series.mean() * 252
-    annualized_volatility = returns_series.std() * np.sqrt(252)
-    if annualized_volatility == 0:
-        return 0
-    return (annualized_return - risk_free_rate) / annualized_volatility
-
-def simulate_performance(prices_df, benchmark_series, initial_capital, max_weight, tx_fee_rate=0.0):
-    daily_returns = prices_df.pct_change().dropna()
-    benchmark_returns = benchmark_series.pct_change().dropna()
+def execute_rebalance(market_data, state, ledger, target_weights_dict):
+    today = market_data.index.max() # Simulate "today" as the last available day in db
+    today_str = today.strftime('%Y-%m-%d')
     
-    common_dates = daily_returns.index.intersection(benchmark_returns.index)
-    daily_returns = daily_returns.loc[common_dates]
-    benchmark_returns = benchmark_returns.loc[common_dates]
+    current_holdings = calculate_current_holdings(ledger)
+    cash = state['cash_balance']
     
-    if len(common_dates) <= LOOKBACK_DAYS:
-        return None, None, None, None, None
+    # Calculate current portfolio value
+    portfolio_value = cash
+    current_prices = {}
+    for ticker, shares in current_holdings.items():
+        if ticker in market_data.columns:
+            price = market_data.loc[today, ticker]
+            current_prices[ticker] = price
+            portfolio_value += shares * price
+            
+    # Calculate target values and necessary trades
+    new_ledger_rows = []
+    
+    # First: Execute all Sells to free up cash
+    for ticker, current_shares in current_holdings.items():
+        target_weight = target_weights_dict.get(ticker, 0)
+        target_value = portfolio_value * target_weight
+        price = market_data.loc[today, ticker] if ticker in market_data.columns else current_prices.get(ticker, 0)
         
-    portfolio_daily_returns = pd.Series(index=common_dates, dtype=float)
-    num_assets = len(prices_df.columns)
-    current_weights = np.repeat(1.0 / num_assets, num_assets)
-    final_optimal_weights = {}
-
-    # Streamlit Progress Bar
-    progress_bar = st.progress(0, text="Simulating Portfolio Adjustments...")
-    total_steps = len(range(LOOKBACK_DAYS, len(common_dates)))
-
-    for step, i in enumerate(range(LOOKBACK_DAYS, len(common_dates))):
-        fee_penalty = 0.0
-        
-        # Monthly Rebalance
-        if (i - LOOKBACK_DAYS) % REBALANCE_FREQ == 0:
-            start_idx = i - LOOKBACK_DAYS
-            train_prices = prices_df.loc[common_dates[start_idx:i]]
-            try:
-                opt_weights_dict = optimize_portfolio(train_prices, max_weight)
-                new_weights = np.array([opt_weights_dict.get(ticker, 0) for ticker in daily_returns.columns])
+        if price > 0:
+            target_shares = int(target_value / price)
+            # Apply Vietnam HOSE Board Lot constraint (multiples of 100)
+            target_shares = (target_shares // 100) * 100
+            
+            if target_shares < current_shares:
+                # Need to sell
+                shares_to_sell = current_shares - target_shares
+                trade_value = shares_to_sell * price
+                fee = trade_value * TX_FEE_RATE
                 
-                # Calculate turnover to apply transaction fees (only applies on rebalance days)
-                if tx_fee_rate > 0:
-                    turnover = np.sum(np.abs(new_weights - current_weights))
-                    # Assuming fee is charged on both buying and selling the difference
-                    fee_penalty = turnover * tx_fee_rate
+                cash += (trade_value - fee)
+                new_ledger_rows.append({
+                    'Date': today_str, 'Ticker': ticker, 'Action': 'SELL', 
+                    'Shares': shares_to_sell, 'Price': price, 'Value': trade_value, 'Fee': fee
+                })
+                
+    # Second: Execute all Buys with available cash
+    for ticker, target_weight in target_weights_dict.items():
+        if target_weight > 0:
+            target_value = portfolio_value * target_weight
+            price = market_data.loc[today, ticker]
+            current_shares = current_holdings.get(ticker, 0)
+            
+            target_shares = int(target_value / price)
+            # Apply Vietnam HOSE Board Lot constraint (multiples of 100)
+            target_shares = (target_shares // 100) * 100
+            
+            if target_shares > current_shares:
+                # Need to buy
+                shares_to_buy = target_shares - current_shares
+                trade_value = shares_to_buy * price
+                fee = trade_value * TX_FEE_RATE
+                
+                total_cost = trade_value + fee
+                if cash >= total_cost:
+                    cash -= total_cost
+                    new_ledger_rows.append({
+                        'Date': today_str, 'Ticker': ticker, 'Action': 'BUY', 
+                        'Shares': shares_to_buy, 'Price': price, 'Value': trade_value, 'Fee': fee
+                    })
+                else:
+                    st.toast(f"Not enough cash to buy {ticker}. Skipping.")
                     
-                current_weights = new_weights
-                final_optimal_weights = opt_weights_dict
-            except Exception as e:
-                pass 
-                
-        # Gross return today
-        gross_return = np.dot(current_weights, daily_returns.iloc[i])
+    # Save State
+    if new_ledger_rows:
+        new_df = pd.DataFrame(new_ledger_rows)
+        updated_ledger = pd.concat([ledger, new_df], ignore_index=True)
+        updated_ledger.to_csv(LEDGER_FILE, index=False)
         
-        # Net return (deducting fees on rebalance day)
-        net_return = gross_return - fee_penalty
-        portfolio_daily_returns.iloc[i] = net_return
-        
-        # Update progress bar every 5%
-        if step % max(1, int(total_steps / 20)) == 0:
-             progress_bar.progress(step / total_steps, text=f"Simulating: {common_dates[i].strftime('%Y-%m')}")
-             
-    progress_bar.empty() # Clear bar when done
+        state['cash_balance'] = cash
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f)
+            
+        st.success(f"Robo-Advisor executed {len(new_ledger_rows)} trades successfully!")
+    else:
+        st.info("Portfolio already matches optimal weights. No trades needed.")
 
-    portfolio_daily_returns = portfolio_daily_returns.dropna()
-    opt_cumulative_returns = (1 + portfolio_daily_returns).cumprod()
-    opt_portfolio_value = initial_capital * opt_cumulative_returns
-    
-    bench_returns_matched = benchmark_returns.loc[portfolio_daily_returns.index]
-    bench_cumulative_returns = (1 + bench_returns_matched).cumprod()
-    bench_portfolio_value = initial_capital * bench_cumulative_returns
+# --- App Layout ---
+st.title("🇻🇳 VN Live Robo-Advisor Tracker")
+st.markdown("A persistent portfolio tracker powered by the Markowitz Mean-Variance optimization engine.")
 
-    # Calculate advanced metrics
-    metrics = {
-        'port_mdd': calculate_drawdown(portfolio_daily_returns),
-        'bench_mdd': calculate_drawdown(bench_returns_matched),
-        'port_sharpe': calculate_sharpe(portfolio_daily_returns),
-        'bench_sharpe': calculate_sharpe(bench_returns_matched)
-    }
+# Database Initialization
+market_db = load_market_data()
+if market_db.empty:
+    st.stop()
 
-    return opt_portfolio_value, bench_portfolio_value, final_optimal_weights, portfolio_daily_returns, metrics
+state, ledger = load_portfolio()
 
-# --- UI Layout ---
-st.title("🇻🇳 VN Robo-Advisor Dashboard")
-st.markdown("A quantitative portfolio optimizer for the Vietnamese Stock Market using Markowitz Mean-Variance.")
-
-# Sidebar Controls
 with st.sidebar:
-    st.header("Simulation Parameters")
-    
-    st.subheader("Capital & Limits")
-    initial_cap = st.number_input("Initial Capital (VND)", min_value=10_000_000, value=1_000_000_000, step=100_000_000, format="%d")
-    max_weight_pct = st.slider("Max Allocation per Stock", min_value=10, max_value=100, value=30, step=5, format="%d%%", help="To ensure diversification, force the algorithm to limit exposure to any single stock.")
+    st.header("Wallet Settings")
+    if state is None:
+        initial_cap = st.number_input("Initial Deposit (VND)", min_value=1_000_000, value=1_000_000_000, step=100_000_000)
+        if st.button("Initialize Portfolio Wallet", type="primary"):
+            state = init_portfolio(initial_cap)
+            st.rerun()
+    else:
+        st.success("Wallet Active")
+        if st.button("🔴 Reset/Delete Entire Portfolio"):
+            if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
+            if os.path.exists(LEDGER_FILE): os.remove(LEDGER_FILE)
+            st.rerun()
+            
+    st.divider()
+    st.subheader("Robo-Advisor Constraints")
+    max_weight_pct = st.slider("Max Allocation per Stock", min_value=10, max_value=100, value=30, step=5, format="%d%%")
     max_weight_dec = max_weight_pct / 100.0
     
-    st.subheader("Realism")
-    tx_fee_pct = st.number_input("Trading Fee (%)", min_value=0.0, max_value=2.0, value=0.15, step=0.05, help="Brokerage and tax fees applied during monthly rebalancing turnover. Typical VN broker fee is ~0.15%")
-    tx_fee_dec = tx_fee_pct / 100.0
+    if "ticker_selector" not in st.session_state:
+        st.session_state.ticker_selector = ["HPG", "VCB", "VHM", "REE", "MBB", "TCB"]
 
-    st.subheader("Timeframe")
-    default_start = datetime.today() - timedelta(days=4*365) # 4 years default
-    start_date = st.date_input("Start Date", value=default_start)
-    end_date = st.date_input("End Date", value=datetime.today())
-    
-    st.subheader("Universe")
-    selected_tickers = st.multiselect("Select VN30 Stocks", options=DEFAULT_TICKERS, default=["FPT", "HPG", "VCB", "VHM", "MWG", "REE", "MBB", "VNM", "TCB"])
-    
-    run_sim = st.button("Run Simulation", type="primary", use_container_width=True)
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("Select All", use_container_width=True):
+            st.session_state.ticker_selector = [t for t in DEFAULT_TICKERS if t in market_db.columns]
+            st.rerun()
+    with colB:
+        if st.button("Clear", use_container_width=True):
+            st.session_state.ticker_selector = []
+            st.rerun()
 
-# --- Main App Logic ---
-if run_sim or not st.session_state.get('sim_run'):
-    st.session_state['sim_run'] = True
-    
-    if len(selected_tickers) < 2:
-        st.error("Please select at least two stocks for the portfolio.")
-        st.stop()
-        
-    start_str = start_date.strftime('%Y-%m-%d')
-    end_str = end_date.strftime('%Y-%m-%d')
-    
-    with st.spinner("Fetching Market Data..."):
-        prices_df = fetch_data(selected_tickers, start_str, end_str)
-        benchmark_series = fetch_benchmark(start_str, end_str)
+    selected_tickers = st.multiselect(
+        "Active ETF Universe", 
+        options=DEFAULT_TICKERS, 
+        key="ticker_selector"
+    )
 
-    if prices_df.empty or benchmark_series is None:
-        st.error("Failed to fetch sufficient data from vnstock. Please try adjusting the dates or tickers.")
-        st.stop()
+if state is None:
+    st.info("👋 Welcome! Please initialize your wallet in the sidebar to start tracking your portfolio.")
+    st.stop()
 
-    # Run the heavy math
-    opt_val, bench_val, final_weights, ret_series, metrics = simulate_performance(prices_df, benchmark_series, initial_cap, max_weight_dec, tx_fee_dec)
+# --- Main Dashboard Tabs ---
+tab1, tab2, tab3 = st.tabs(["📊 Current Holdings", "📈 Performance Tracker", "🤖 Robo-Advisor Terminal"])
 
-    if opt_val is None:
-        st.error(f"Not enough data to run simulation. Ensure your date range is greater than {LOOKBACK_DAYS} trading days (approx 1 year).")
-        st.stop()
-        
-    # --- Rendering Metrics ---
-    final_nav = opt_val.iloc[-1]
-    total_return = (final_nav - initial_cap) / initial_cap
+# Calculate real-time stats
+holdings = calculate_current_holdings(ledger)
+latest_date = market_db.index.max()
+cash = state['cash_balance']
+
+nav = cash
+holding_values = {}
+for ticker, shares in holdings.items():
+    if ticker in market_db.columns:
+        price = market_db.loc[latest_date, ticker]
+        val = shares * price
+        holding_values[ticker] = val
+        nav += val
+
+with tab1:
+    st.subheader("Live Portfolio Snapshot")
+    st.caption(f"Based on last market close: {latest_date.strftime('%Y-%m-%d')}")
     
-    final_bench_nav = bench_val.iloc[-1]
-    bench_return = (final_bench_nav - initial_cap) / initial_cap
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Net Asset Value (NAV)", f"{nav:,.0f} ₫")
+    col2.metric("Available Cash", f"{cash:,.0f} ₫")
     
-    st.subheader("Performance Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Final Portfolio Value", f"{final_nav:,.0f} ₫", f"{final_nav - initial_cap:,.0f} ₫")
-    col2.metric("Strategy Return", f"{total_return * 100:.2f}%", f"{(total_return - bench_return) * 100:.2f}% vs ETF Benchmark", delta_color="normal")
-    col3.metric("Max Drawdown (Risk)", f"{metrics['port_mdd'] * 100:.2f}%", f"{(metrics['port_mdd'] - metrics['bench_mdd']) * 100:.2f}% vs ETF Benchmark", delta_color="inverse")
-    col4.metric("Sharpe Ratio", f"{metrics['port_sharpe']:.2f}", f"{metrics['port_sharpe'] - metrics['bench_sharpe']:.2f} vs ETF Benchmark", delta_color="normal")
-
+    total_roi = ((nav / state['initial_capital']) - 1) * 100
+    col3.metric("All-Time Return", f"{total_roi:.2f} %", f"{nav - state['initial_capital']:,.0f} ₫")
+    
     st.divider()
+    
+    if holdings:
+        colA, colB = st.columns([1, 2])
+        with colA:
+            st.write("### Current Positions")
+            pos_df = pd.DataFrame([
+                {"Ticker": k, "Shares": f"{v:,.0f}", "Current Value (VND)": f"{holding_values[k]:,.0f}"}
+                for k, v in holdings.items()
+            ])
+            st.dataframe(pos_df, use_container_width=True, hide_index=True)
+            
+        with colB:
+            # Add cash to pie chart
+            labels = list(holding_values.keys()) + ["Cash"]
+            values = list(holding_values.values()) + [cash]
+            fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4, hoverinfo="label+percent")])
+            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Your portfolio is empty. Go to the Robo-Advisor tab to make your first investment!")
 
-    # --- Rendering Charts ---
-    visual_col, pie_col = st.columns([2, 1])
-
-    with visual_col:
-        st.subheader("Equity Curve vs Benchmark (VN30 ETF)")
+with tab2:
+    st.subheader("Historical Tracking")
+    if ledger.empty:
+        st.info("No trading history yet. Run the Robo-Advisor to start tracking.")
+    else:
+        st.write("Replaying your actual trade ledger against historical market data...")
+        
+        # 1. Prepare timeline
+        first_trade_date = pd.to_datetime(ledger['Date'].min())
+        timeline = market_db.loc[first_trade_date:latest_date].index
+        
+        # 2. Replay ledger day by day to build equity curve
+        portfolio_history = []
+        current_shares = {}
+        current_cash = state['initial_capital']
+        
+        # Sort ledger by date for chronological replay
+        sorted_ledger = ledger.copy()
+        sorted_ledger['Date'] = pd.to_datetime(sorted_ledger['Date'])
+        sorted_ledger = sorted_ledger.sort_values('Date')
+        
+        for date in timeline:
+            # Apply any trades that happened on or before this date
+            day_trades = sorted_ledger[sorted_ledger['Date'] == date]
+            for _, trade in day_trades.iterrows():
+                ticker = trade['Ticker']
+                shares = trade['Shares']
+                total_cost_or_proceeds = trade['Value'] + trade['Fee'] if trade['Action'] == 'BUY' else trade['Value'] - trade['Fee']
+                
+                if trade['Action'] == 'BUY':
+                    current_shares[ticker] = current_shares.get(ticker, 0) + shares
+                    current_cash -= total_cost_or_proceeds
+                else:
+                    current_shares[ticker] = current_shares.get(ticker, 0) - shares
+                    current_cash += total_cost_or_proceeds
+                    
+            # Calculate EOD NAV
+            eod_nav = current_cash
+            for ticker, shares in current_shares.items():
+                if shares > 0 and ticker in market_db.columns:
+                    eod_nav += shares * market_db.loc[date, ticker]
+            
+            portfolio_history.append({'time': date, 'NAV': eod_nav})
+            
+        history_df = pd.DataFrame(portfolio_history).set_index('time')
+        
+        # 3. Calculate Benchmark (VN30 ETF) Normalized
+        if 'E1VFVN30' in market_db.columns:
+            bench_prices = market_db.loc[timeline, 'E1VFVN30']
+            if not bench_prices.empty:
+                bench_shares_bought = state['initial_capital'] / bench_prices.iloc[0]
+                bench_values = bench_prices * bench_shares_bought
+            else:
+                bench_values = pd.Series(state['initial_capital'], index=timeline)
+        else:
+            bench_values = pd.Series(state['initial_capital'], index=timeline)
+            
+        # 4. Plot Equity Curve
         fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(x=opt_val.index, y=opt_val, mode='lines', name='Dynamic Portfolio', line=dict(color='#00CC96', width=2)))
-        fig_line.add_trace(go.Scatter(x=bench_val.index, y=bench_val, mode='lines', name='VN30 ETF (E1VFVN30)', line=dict(color='#636EFA', width=2)))
+        fig_line.add_trace(go.Scatter(x=history_df.index, y=history_df['NAV'], mode='lines', name='Actual Portfolio', line=dict(color='#00CC96', width=2)))
+        fig_line.add_trace(go.Scatter(x=bench_values.index, y=bench_values, mode='lines', name='VN30 ETF (E1VFVN30)', line=dict(color='#636EFA', width=2)))
         
         fig_line.update_layout(
             yaxis_title="Portfolio Value (VND)",
@@ -240,17 +390,80 @@ if run_sim or not st.session_state.get('sim_run'):
         )
         st.plotly_chart(fig_line, use_container_width=True)
 
-    with pie_col:
-        st.subheader("Current Allocation")
-        st.caption("Target weights from the latest monthly rebalance.")
-        
-        filtered_weights = {k: v for k, v in final_weights.items() if v > 0.01}
-        labels = list(filtered_weights.keys())
-        values = list(filtered_weights.values())
-        
-        if len(values) > 0:
-            fig_pie = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4, hoverinfo="label+percent")])
-            fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.1))
-            st.plotly_chart(fig_pie, use_container_width=True)
+with tab3:
+    st.subheader("Robo-Advisor Terminal")
+    st.write("Clicking the optimization button will calculate the mathematically ideal portfolio based on the last 252 trading days, and automatically buy/sell shares using your available cash.")
+    
+    if st.button("🚀 Run Monthly Rebalance Engine", use_container_width=True):
+        if len(selected_tickers) < 2:
+            st.error("Select at least 2 stocks in the universe sidebar.")
         else:
-            st.info("No significant allocations available.")
+            with st.spinner("Analyzing market data and calculating Maximum Sharpe Ratio..."):
+                # Filter out any selected tickers that failed to download
+                valid_tickers = [t for t in selected_tickers if t in market_db.columns]
+                
+                if len(valid_tickers) < 2:
+                    st.error("Not enough valid historical data for selected tickers. The API may have failed to download them.")
+                else:
+                    # Filter last 1 year of data
+                    train_data = market_db[valid_tickers].loc[:latest_date].tail(LOOKBACK_DAYS)
+                    
+                    # Get Target Weights
+                    target_w = optimize_portfolio(train_data, valid_tickers, max_weight_dec)
+                
+                # Execute Virtual Trades
+                execute_rebalance(market_db, state, ledger, target_w)
+                
+                # Reload UI
+                st.rerun()
+                
+    st.divider()
+    st.subheader("Transaction Ledger (Editable)")
+    if not ledger.empty:
+        st.write("Edit rows below to manually adjust trades or fix slippage prices. Click 'Save Edits' to recalculate your wallet.")
+        
+        # Display editable dataframe
+        editable_ledger = ledger.copy()
+        
+        edited_ledger = st.data_editor(
+            editable_ledger, 
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", required=True),
+                "Ticker": st.column_config.TextColumn("Ticker", required=True),
+                "Action": st.column_config.SelectboxColumn("Action", options=["BUY", "SELL"], required=True),
+                "Shares": st.column_config.NumberColumn("Shares", min_value=1, step=100, required=True),
+                "Price": st.column_config.NumberColumn("Price (VND)", min_value=0, required=True),
+                "Value": st.column_config.NumberColumn("Value (VND)", disabled=True),
+                "Fee": st.column_config.NumberColumn("Fee (VND)", disabled=True)
+            },
+            hide_index=True
+        )
+        
+        if st.button("💾 Save Ledger Edits", type="primary"):
+            # Reconciliation
+            # Recalculate Value and Fee
+            edited_ledger['Value'] = edited_ledger['Shares'] * edited_ledger['Price']
+            edited_ledger['Fee'] = edited_ledger['Value'] * TX_FEE_RATE
+            
+            # Recalculate Cash Balance chronologically
+            new_cash = state['initial_capital']
+            for _, row in edited_ledger.iterrows():
+                total_cost = row['Value'] + row['Fee'] if row['Action'] == 'BUY' else row['Value'] - row['Fee']
+                if row['Action'] == 'BUY':
+                    new_cash -= total_cost
+                else:
+                    new_cash += total_cost
+                    
+            state['cash_balance'] = new_cash
+            
+            # Save state
+            with open(STATE_FILE, 'w') as f:
+                json.dump(state, f)
+            
+            edited_ledger.to_csv(LEDGER_FILE, index=False)
+            st.success("Ledger and Wallet Cash Balance successfully updated!")
+            st.rerun()
+    else:
+        st.write("No trades recorded.")
