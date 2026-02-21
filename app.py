@@ -305,10 +305,18 @@ with tab1:
         with colA:
             st.write("### Current Positions")
             pos_df = pd.DataFrame([
-                {"Ticker": k, "Shares": f"{v:,.0f}", "Current Value (VND)": f"{holding_values[k]:,.0f}"}
+                {"Ticker": k, "Shares": v, "Current Value (VND)": holding_values[k]}
                 for k, v in holdings.items()
             ])
-            st.dataframe(pos_df, use_container_width=True, hide_index=True)
+            
+            st.dataframe(
+                pos_df.style.format({
+                    "Shares": "{:,.0f}", 
+                    "Current Value (VND)": "{:,.0f}"
+                }), 
+                use_container_width=True, 
+                hide_index=True
+            )
             
         with colB:
             # Add cash to pie chart
@@ -442,8 +450,16 @@ with tab3:
         # Display editable dataframe
         editable_ledger = ledger.copy()
         
+        # Apply pandas styling to force commas in the UI while keeping the underlying data numeric
+        styled_ledger = editable_ledger.style.format({
+            "Shares": "{:,.0f}",
+            "Price": "{:,.0f}",
+            "Value": "{:,.0f}",
+            "Fee": "{:,.0f}"
+        })
+        
         edited_ledger = st.data_editor(
-            editable_ledger, 
+            styled_ledger, 
             num_rows="dynamic",
             use_container_width=True,
             column_config={
