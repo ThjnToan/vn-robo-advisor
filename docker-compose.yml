@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: vn_robo_advisor_api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the data files so we can persist ledger across restarts
+      - ./market_data.csv:/app/market_data.csv
+      - ./portfolio_state.json:/app/portfolio_state.json
+      - ./transactions.csv:/app/transactions.csv
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../frontend.Dockerfile
+    container_name: vn_robo_advisor_web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

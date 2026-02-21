@@ -7,3 +7,5 @@ scikit-learn
 vnstock
 matplotlib
 fpdf2>=2.8.0
+fastapi
+uvicorn
