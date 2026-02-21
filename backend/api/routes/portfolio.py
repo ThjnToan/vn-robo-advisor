@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from typing import List, Dict, Any
 from backend.core.portfolio import (
@@ -23,8 +23,8 @@ class ExecuteTradesRequest(BaseModel):
     trades: List[Dict[str, Any]]
 
 @router.get("/state")
-async def get_portfolio_state():
-    state, ledger = load_portfolio()
+async def get_portfolio_state(x_session_id: str = Header(...)):
+    state, ledger = load_portfolio(x_session_id)
     if not state:
         return {"status": "uninitialized"}
         
@@ -55,24 +55,27 @@ async def get_portfolio_state():
     }
 
 @router.post("/init")
-async def initialize_wallet(request: InitWalletRequest):
-    state = init_portfolio(request.initial_capital)
+async def initialize_wallet(request: InitWalletRequest, x_session_id: str = Header(...)):
+    state = init_portfolio(request.initial_capital, x_session_id)
     return {"status": "success", "state": state}
 
 @router.post("/reset")
-async def reset_portfolio():
-    from backend.core.portfolio import STATE_FILE, LEDGER_FILE
+async def reset_portfolio(x_session_id: str = Header(...)):
+    from backend.core.portfolio import get_state_file, get_ledger_file
     import os
     
-    if os.path.exists(STATE_FILE):
-        os.remove(STATE_FILE)
-    if os.path.exists(LEDGER_FILE):
-        os.remove(LEDGER_FILE)
+    state_file = get_state_file(x_session_id)
+    ledger_file = get_ledger_file(x_session_id)
+    
+    if os.path.exists(state_file):
+        os.remove(state_file)
+    if os.path.exists(ledger_file):
+        os.remove(ledger_file)
         
     return {"status": "success", "message": "Portfolio completely reset."}
 
 @router.post("/optimize")
-async def get_optimal_weights(request: RebalanceRequest):
+async def get_optimal_weights(request: RebalanceRequest, x_session_id: str = Header(...)):
     market_db = load_market_data()
     if market_db.empty:
         raise HTTPException(status_code=500, detail="Market data not found")
@@ -94,7 +97,7 @@ async def get_optimal_weights(request: RebalanceRequest):
             train_data, valid_tickers, request.max_weight, request.max_sector_weight
         )
         
-    state, ledger = load_portfolio()
+    state, ledger = load_portfolio(x_session_id)
     if state is None:
         raise HTTPException(status_code=400, detail="Wallet not initialized")
         
@@ -106,12 +109,12 @@ async def get_optimal_weights(request: RebalanceRequest):
     }
 
 @router.post("/execute")
-async def execute_target_trades(request: ExecuteTradesRequest):
-    state, ledger = load_portfolio()
+async def execute_target_trades(request: ExecuteTradesRequest, x_session_id: str = Header(...)):
+    state, ledger = load_portfolio(x_session_id)
     if state is None:
         raise HTTPException(status_code=400, detail="Wallet not initialized")
         
-    state, updated_ledger = execute_trades(request.trades, state, ledger)
+    state, updated_ledger = execute_trades(request.trades, state, ledger, x_session_id)
     
     return {
         "status": "success",

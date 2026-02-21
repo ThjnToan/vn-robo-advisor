@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from typing import List, Dict, Any, Tuple
 import datetime
@@ -9,9 +9,9 @@ from backend.core.analytics import run_monte_carlo_var, compute_efficient_fronti
 router = APIRouter()
 
 @router.get("/equity-curve")
-async def get_equity_curve():
+async def get_equity_curve(x_session_id: str = Header(...)):
     market_db = load_market_data()
-    state, ledger = load_portfolio()
+    state, ledger = load_portfolio(x_session_id)
 
     if state is None or market_db.empty:
         raise HTTPException(status_code=400, detail="Portfolio not initialized or market data unavailable")
@@ -31,9 +31,9 @@ class EFRequest(BaseModel):
     target_tickers: List[str]
 
 @router.get("/monte-carlo")
-async def get_monte_carlo_var():
+async def get_monte_carlo_var(x_session_id: str = Header(...)):
     market_db = load_market_data()
-    state, ledger = load_portfolio()
+    state, ledger = load_portfolio(x_session_id)
     
     if state is None or market_db.empty:
         raise HTTPException(status_code=400, detail="Data unavailable")

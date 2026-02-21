@@ -10,8 +10,15 @@ import os
 # --- Constants & Paths ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) # Root
 DATA_FILE = os.path.join(BASE_DIR, "market_data.csv")
-STATE_FILE = os.path.join(BASE_DIR, "portfolio_state.json")
-LEDGER_FILE = os.path.join(BASE_DIR, "transactions.csv")
+
+SESSION_DIR = os.path.join(BASE_DIR, "data", "sessions")
+os.makedirs(SESSION_DIR, exist_ok=True)
+
+def get_state_file(session_id: str):
+    return os.path.join(SESSION_DIR, f"{session_id}_portfolio_state.json")
+
+def get_ledger_file(session_id: str):
+    return os.path.join(SESSION_DIR, f"{session_id}_transactions.csv")
 
 DEFAULT_TICKERS = [
     "ACB", "BCG", "BCM", "BID", "BMP", "BVH", "CII", "CMG", "CRE", "CTD", 
@@ -66,24 +73,26 @@ def load_market_data():
     return df
 
 # --- State Management ---
-def init_portfolio(initial_capital: float):
+def init_portfolio(initial_capital: float, session_id: str):
     state = {
         "start_date": datetime.today().strftime('%Y-%m-%d'),
         "initial_capital": initial_capital,
         "cash_balance": initial_capital,
     }
-    with open(STATE_FILE, 'w') as f:
+    with open(get_state_file(session_id), 'w') as f:
         json.dump(state, f)
         
     df = pd.DataFrame(columns=['Date', 'Ticker', 'Action', 'Shares', 'Price', 'Value', 'Fee'])
-    df.to_csv(LEDGER_FILE, index=False)
+    df.to_csv(get_ledger_file(session_id), index=False)
     return state
 
-def load_portfolio():
-    if os.path.exists(STATE_FILE) and os.path.exists(LEDGER_FILE):
-        with open(STATE_FILE, 'r') as f:
+def load_portfolio(session_id: str):
+    state_file = get_state_file(session_id)
+    ledger_file = get_ledger_file(session_id)
+    if os.path.exists(state_file) and os.path.exists(ledger_file):
+        with open(state_file, 'r') as f:
             state = json.load(f)
-        ledger = pd.read_csv(LEDGER_FILE)
+        ledger = pd.read_csv(ledger_file)
         return state, ledger
     return None, None
 
@@ -224,7 +233,7 @@ def generate_trades(market_data, state, ledger, target_weights_dict):
 
     return proposed_trades
 
-def execute_trades(proposed_trades, state, ledger):
+def execute_trades(proposed_trades, state, ledger, session_id: str):
     if not proposed_trades:
         return state, ledger
 
@@ -247,10 +256,10 @@ def execute_trades(proposed_trades, state, ledger):
     
     new_df = pd.DataFrame(new_ledger_rows)
     updated_ledger = pd.concat([ledger, new_df], ignore_index=True) if not ledger.empty else new_df
-    updated_ledger.to_csv(LEDGER_FILE, index=False)
+    updated_ledger.to_csv(get_ledger_file(session_id), index=False)
     
     state['cash_balance'] = cash
-    with open(STATE_FILE, 'w') as f:
+    with open(get_state_file(session_id), 'w') as f:
         json.dump(state, f)
         
     return state, updated_ledger

@@ -1,5 +1,22 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
+export function getSessionId(): string {
+  if (typeof window === "undefined") return "server-session";
+  const SESSION_KEY = "guest_session_id";
+  let sessionId = localStorage.getItem(SESSION_KEY);
+  if (!sessionId) {
+    sessionId = crypto.randomUUID();
+    localStorage.setItem(SESSION_KEY, sessionId);
+  }
+  return sessionId;
+}
+
+function getHeaders(): HeadersInit {
+  return {
+    "x-session-id": getSessionId(),
+  };
+}
+
 export interface Holding {
   shares: number;
   current_value: number;
@@ -95,7 +112,9 @@ export interface EquityCurveData {
 
 
 export async function fetchPortfolioState(): Promise<PortfolioState> {
-  const res = await fetch(`${API_BASE}/api/portfolio/state`);
+  const res = await fetch(`${API_BASE}/api/portfolio/state`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch state");
   return res.json();
 }
@@ -103,6 +122,7 @@ export async function fetchPortfolioState(): Promise<PortfolioState> {
 export async function resetPortfolio(): Promise<void> {
   const res = await fetch(`${API_BASE}/api/portfolio/reset`, {
     method: "POST",
+    headers: getHeaders(),
   });
   if (!res.ok) throw new Error("Failed to reset portfolio");
 }
@@ -110,7 +130,7 @@ export async function resetPortfolio(): Promise<void> {
 export async function initWallet(initial_capital: number): Promise<void> {
   const res = await fetch(`${API_BASE}/api/portfolio/init`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ initial_capital }),
   });
   if (!res.ok) throw new Error("Failed to initialize wallet");
@@ -125,7 +145,7 @@ export async function optimizePortfolio(params: {
 }): Promise<OptimizeResponse> {
   const res = await fetch(`${API_BASE}/api/portfolio/optimize`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
   if (!res.ok) {
@@ -138,20 +158,24 @@ export async function optimizePortfolio(params: {
 export async function executeTrades(trades: ProposedTrade[]): Promise<void> {
   const res = await fetch(`${API_BASE}/api/portfolio/execute`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ trades }),
   });
   if (!res.ok) throw new Error("Failed to execute trades");
 }
 
 export async function fetchScreenerData(tickers: string[]): Promise<ScreenerRow[]> {
-  const res = await fetch(`${API_BASE}/api/market/screener?tickers=${tickers.join(",")}`);
+  const res = await fetch(`${API_BASE}/api/market/screener?tickers=${tickers.join(",")}`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch screener data");
   return res.json();
 }
 
 export async function fetchMonteCarlo(): Promise<MonteCarloResult> {
-  const res = await fetch(`${API_BASE}/api/analytics/monte-carlo`);
+  const res = await fetch(`${API_BASE}/api/analytics/monte-carlo`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch Monte Carlo data");
   return res.json();
 }
@@ -159,7 +183,7 @@ export async function fetchMonteCarlo(): Promise<MonteCarloResult> {
 export async function fetchEfficientFrontier(tickers: string[]): Promise<EfficientFrontierData> {
   const res = await fetch(`${API_BASE}/api/analytics/efficient-frontier`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ target_tickers: tickers }),
   });
   if (!res.ok) throw new Error("Failed to compute efficient frontier");
@@ -167,13 +191,17 @@ export async function fetchEfficientFrontier(tickers: string[]): Promise<Efficie
 }
 
 export async function fetchHistoricalPrices(ticker: string, days = 252): Promise<{ dates: string[]; prices: number[] }> {
-  const res = await fetch(`${API_BASE}/api/market/historical/${ticker}?days=${days}`);
+  const res = await fetch(`${API_BASE}/api/market/historical/${ticker}?days=${days}`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch historical prices");
   return res.json();
 }
 
 export async function fetchEquityCurve(): Promise<EquityCurveData> {
-  const res = await fetch(`${API_BASE}/api/analytics/equity-curve`);
+  const res = await fetch(`${API_BASE}/api/analytics/equity-curve`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch equity curve data");
   return res.json();
 }

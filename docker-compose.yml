@@ -9,10 +9,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount the data files so we can persist ledger across restarts
       - ./market_data.csv:/app/market_data.csv
-      - ./portfolio_state.json:/app/portfolio_state.json
-      - ./transactions.csv:/app/transactions.csv
+      - ./data:/app/data
     restart: unless-stopped
 
   frontend:

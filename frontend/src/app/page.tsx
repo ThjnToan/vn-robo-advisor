@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import {
   fetchPortfolioState, initWallet, optimizePortfolio,
-  executeTrades, fetchMonteCarlo, fetchScreenerData, fetchEquityCurve, fetchEfficientFrontier, resetPortfolio,
+  executeTrades, fetchMonteCarlo, fetchScreenerData, fetchEquityCurve, fetchEfficientFrontier, resetPortfolio, getSessionId,
   type PortfolioState, type ProposedTrade, type ScreenerRow, type MonteCarloResult, type EquityCurveData, type EfficientFrontierData
 } from "@/lib/api";
 import { DEFAULT_TICKERS, PRESET_UNIVERSES, formatVnd, formatPct } from "@/lib/constants";
@@ -80,6 +80,11 @@ export default function Home() {
   const [screenerLoading, setScreenerLoading] = useState(false);
   const [equityCurve, setEquityCurve] = useState<EquityCurveData | null>(null);
   const [ecLoading, setEcLoading] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSessionId(getSessionId());
+  }, []);
 
 
 
@@ -207,6 +212,12 @@ export default function Home() {
         <div className="p-5 border-b border-slate-800">
           <h1 className="text-lg font-extrabold gradient-text">🇻🇳 Robo-Advisor</h1>
           <p className="text-xs text-slate-500 mt-1">Markowitz MVO Engine</p>
+          {sessionId && (
+            <div className="mt-3 flex items-center gap-2 bg-slate-800/50 p-2 text-xs rounded border border-slate-700">
+              <div className="h-1.5 w-1.5 rounded-full bg-emerald-500"></div>
+              <p className="font-mono text-slate-300">Guest: {sessionId.split('-')[0]}</p>
+            </div>
+          )}
         </div>
 
         {/* Wallet Section */}
