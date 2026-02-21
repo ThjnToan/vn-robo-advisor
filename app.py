@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt import black_litterman
 import os
 import json
 
@@ -132,6 +133,45 @@ def optimize_portfolio(prices_df, target_tickers, max_weight):
         
     # Apply a strict 5% cutoff to zero-out tiny insignificant allocations 
     # and force the optimizer to concentrate on the absolute best stocks.
+    return ef.clean_weights(cutoff=0.05)
+
+def optimize_black_litterman(prices_df, target_tickers, max_weight, tactical_views):
+    """
+    Runs the Black-Litterman robust optimization model blending historical 
+    covariance with the user's subjective tactical views.
+    """
+    S = risk_models.sample_cov(prices_df[target_tickers], frequency=252)
+    
+    # 1. Calculate Market-Implied Prior Returns
+    # Assuming equal market caps for the baseline VN100 universe since we don't fetch live caps
+    mcaps = {ticker: 1.0 for ticker in target_tickers}
+    delta = black_litterman.market_implied_risk_aversion(prices_df[target_tickers].mean(axis=1)) # Simple proxy for market
+    market_prior = black_litterman.market_implied_prior_returns(mcaps, delta, S)
+    
+    # 2. Integrate User Views
+    # Map confidence (0.0 to 1.0) to omega (uncertainty matrix). Default PyPortfolioOpt handles this via Idzorek's method if we pass confidences,
+    # but for simplicity, we pass absolute views and let BL generate default diagonal omega.
+    view_dict = {}
+    for row in tactical_views:
+        if row['Ticker'] in target_tickers:
+            view_dict[row['Ticker']] = row['Expected Return (%)'] / 100.0
+            
+    if not view_dict:
+        # Fallback to standard markowitz if no valid views
+        return optimize_portfolio(prices_df, target_tickers, max_weight)
+        
+    bl = black_litterman.BlackLittermanModel(S, pi=market_prior, absolute_views=view_dict)
+    posterior_rets = bl.bl_returns()
+    posterior_cov = bl.bl_cov()
+    
+    # 3. Maximize Sharpe on the Posterior Distribution
+    ef = EfficientFrontier(posterior_rets, posterior_cov, weight_bounds=(0, max_weight))
+    try:
+        raw_weights = ef.max_sharpe()
+    except Exception:
+        ef = EfficientFrontier(posterior_rets, posterior_cov, weight_bounds=(0, max_weight))
+        raw_weights = ef.min_volatility()
+        
     return ef.clean_weights(cutoff=0.05)
 
 def execute_rebalance(market_data, state, ledger, target_weights_dict):
@@ -432,6 +472,27 @@ with tab3:
     st.subheader("Robo-Advisor Terminal")
     st.write("Clicking the optimization button will calculate the mathematically ideal portfolio based on the last 252 trading days, and automatically buy/sell shares using your available cash.")
     
+    # Tactical Views UI
+    st.write("### 🧠 Black-Litterman Tactical Views")
+    st.caption("Optional: Input your personal expected returns for specific stocks to override the purely historical Markowitz baseline.")
+    
+    if "tactical_views" not in st.session_state:
+        st.session_state.tactical_views = pd.DataFrame(columns=["Ticker", "Expected Return (%)"])
+        
+    edited_views = st.data_editor(
+        st.session_state.tactical_views,
+        num_rows="dynamic",
+        column_config={
+            "Ticker": st.column_config.SelectboxColumn("Ticker", options=market_db.columns.tolist(), required=True),
+            "Expected Return (%)": st.column_config.NumberColumn("Expected Return (%)", min_value=-100.0, max_value=500.0, required=True)
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+    st.session_state.tactical_views = edited_views
+    
+    use_bl = st.toggle("Enable Black-Litterman Optimization", value=False)
+    
     if st.button("🚀 Run Monthly Rebalance Engine", use_container_width=True):
         if len(selected_tickers) < 2:
             st.error("Select at least 2 stocks in the universe sidebar.")
@@ -447,7 +508,11 @@ with tab3:
                     train_data = market_db[valid_tickers].loc[:latest_date].tail(LOOKBACK_DAYS)
                     
                     # Get Target Weights
-                    target_w = optimize_portfolio(train_data, valid_tickers, max_weight_dec)
+                    if use_bl and not st.session_state.tactical_views.empty:
+                        views_list = st.session_state.tactical_views.to_dict('records')
+                        target_w = optimize_black_litterman(train_data, valid_tickers, max_weight_dec, views_list)
+                    else:
+                        target_w = optimize_portfolio(train_data, valid_tickers, max_weight_dec)
                 
                 # Execute Virtual Trades
                 execute_rebalance(market_db, state, ledger, target_w)
