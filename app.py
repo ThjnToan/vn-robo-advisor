@@ -257,6 +257,47 @@ def execute_rebalance(market_data, state, ledger, target_weights_dict):
     else:
         st.info("Portfolio already matches optimal weights. No trades needed.")
 
+def run_monte_carlo_var(prices_df, holdings_dict, current_cash, num_simulations=10000, sim_days=30):
+    """ Runs 10,000 correlated random-walk price paths using Cholesky Decomposition of historical covariance. """
+    tickers = [t for t in holdings_dict.keys() if t in prices_df.columns]
+    if not tickers:
+        return None
+        
+    latest_date = prices_df.index.max()
+    initial_values = np.array([holdings_dict[t] * prices_df.loc[latest_date, t] for t in tickers])
+    current_nav = np.sum(initial_values) + current_cash
+    
+    # Calculate daily historical returns over the last year
+    historical_returns = prices_df[tickers].tail(252).pct_change().dropna()
+    mu = historical_returns.mean().values
+    cov = historical_returns.cov().values
+    
+    # Generate random daily returns for all assets across all simulations and days
+    # Shape: (10000, 30, num_assets)
+    np.random.seed(42) # For reproducible deterministic demos
+    try:
+        daily_sim_returns = np.random.multivariate_normal(mu, cov, (num_simulations, sim_days))
+    except Exception:
+        return None # Fallback if cov matrix is not positive semi-definite
+        
+    # Calculate cumulative returns over the period
+    cumulative_returns = np.cumprod(1 + daily_sim_returns, axis=1)
+    
+    # Get the final cumulative return at the end of sim_days
+    final_returns = cumulative_returns[:, -1, :] # Shape: (sims, assets)
+    
+    # Calculate final portfolio values for all simulations
+    final_portfolio_values = np.sum(initial_values * final_returns, axis=1) + current_cash
+    
+    # Calculate Risk Metrics
+    var_95_value = np.percentile(final_portfolio_values, 5)
+    cvar_95_value = final_portfolio_values[final_portfolio_values <= var_95_value].mean()
+    
+    var_95_loss = current_nav - var_95_value
+    cvar_95_loss = current_nav - cvar_95_value
+    
+    return final_portfolio_values, var_95_loss, cvar_95_loss, var_95_value, current_nav
+
 # --- App Layout ---
 st.title("🇻🇳 Live Robo-Advisor Tracker")
 st.markdown("A persistent portfolio tracker powered by the Markowitz Mean-Variance optimization engine.")
@@ -384,6 +425,40 @@ with tab1:
             )])
             fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
+            
+        with st.expander("🔬 Institutional Risk Analytics (Monte Carlo VaR)", expanded=False):
+            st.write("Simulate 10,000 future portfolio paths over the next 30 days based on historical volatility and correlation to calculate your Maximum Expected Downside.")
+            if st.button("Run 10,000 Risk Simulations", use_container_width=True):
+                with st.spinner("Crunching 10,000 multivariate normal random walks using Cholesky Decomposition..."):
+                    results = run_monte_carlo_var(market_db, holdings, cash)
+                    if results:
+                        final_vals, var_loss, cvar_loss, var_threshold, port_nav = results
+                        
+                        rc1, rc2 = st.columns(2)
+                        with rc1:
+                            st.error(f"**95% Value-at-Risk (VaR)**: -{var_loss:,.0f} ₫")
+                            st.caption("In 95 out of 100 simulated alternate realities, your portfolio will NOT lose more than this amount over the next 30 days.")
+                        with rc2:
+                            st.error(f"**Expected Shortfall (CVaR)**: -{cvar_loss:,.0f} ₫")
+                            st.caption("If a catastrophic 5% tail-event DOES occur, this is your average expected mathematical loss.")
+                        
+                        # Plot Histogram
+                        fig_hist = go.Figure(data=[go.Histogram(x=final_vals, nbinsx=50, marker_color='#636EFA')])
+                        fig_hist.add_vline(x=var_threshold, line_width=3, line_dash="dash", line_color="red", 
+                                          annotation_text="95% VaR Cutoff", annotation_position="top left")
+                        fig_hist.add_vline(x=port_nav, line_width=2, line_dash="solid", line_color="green",
+                                          annotation_text="Current NAV", annotation_position="top right")
+                        
+                        fig_hist.update_layout(
+                            title="Distribution of 10,000 Simulated 30-Day Valuations",
+                            xaxis_title="Final Portfolio Value (VND)",
+                            yaxis_title="Frequency (Probability)",
+                            xaxis_tickformat=",.0f",
+                            margin=dict(l=0, r=0, t=40, b=0)
+                        )
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                    else:
+                        st.error("Not enough valid historical data to run simulations.")
     else:
         st.info("Your portfolio is empty. Go to the Robo-Advisor tab to make your first investment!")
 
