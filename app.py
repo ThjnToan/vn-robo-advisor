@@ -314,7 +314,13 @@ with tab1:
             # Add cash to pie chart
             labels = list(holding_values.keys()) + ["Cash"]
             values = list(holding_values.values()) + [cash]
-            fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4, hoverinfo="label+percent")])
+            fig = go.Figure(data=[go.Pie(
+                labels=labels, 
+                values=values, 
+                hole=.4, 
+                textinfo='label+percent',
+                hovertemplate="<b>%{label}</b><br>Value: %{value:,.0f} ₫<br>Allocation: %{percent}<extra></extra>"
+            )])
             fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
     else:
@@ -379,11 +385,22 @@ with tab2:
             
         # 4. Plot Equity Curve
         fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(x=history_df.index, y=history_df['NAV'], mode='lines', name='Actual Portfolio', line=dict(color='#00CC96', width=2)))
-        fig_line.add_trace(go.Scatter(x=bench_values.index, y=bench_values, mode='lines', name='VN30 ETF (E1VFVN30)', line=dict(color='#636EFA', width=2)))
+        fig_line.add_trace(go.Scatter(
+            x=history_df.index, y=history_df['NAV'], 
+            mode='lines', name='Actual Portfolio', 
+            line=dict(color='#00CC96', width=2),
+            hovertemplate="<b>Actual Portfolio</b><br>NAV: %{y:,.0f} ₫<extra></extra>"
+        ))
+        fig_line.add_trace(go.Scatter(
+            x=bench_values.index, y=bench_values, 
+            mode='lines', name='VN30 ETF (E1VFVN30)', 
+            line=dict(color='#636EFA', width=2),
+            hovertemplate="<b>VN30 ETF</b><br>NAV: %{y:,.0f} ₫<extra></extra>"
+        ))
         
         fig_line.update_layout(
             yaxis_title="Portfolio Value (VND)",
+            yaxis_tickformat=",.0f",
             hovermode="x unified",
             margin=dict(l=0, r=0, t=30, b=0),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
