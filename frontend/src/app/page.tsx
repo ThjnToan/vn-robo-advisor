@@ -24,24 +24,24 @@ const PIE_COLORS = ["#38bdf8", "#34d399", "#818cf8", "#fbbf24", "#f87171", "#06b
 
 // ─── Subcomponents ────────────────────────────────────────────────────────────
 
-function MetricCard({ label, value, sub, color = "default" }: {
-  label: string; value: string; sub?: string; color?: "green" | "red" | "default";
+function MetricCard({ label, value, sub, color = "default", delayClass = "" }: {
+  label: string; value: string; sub?: string; color?: "green" | "red" | "default"; delayClass?: string;
 }) {
   const valueClass = color === "green" ? "text-emerald-400" : color === "red" ? "text-red-400" : "text-white";
   return (
-    <div className="glass-card p-5 flex flex-col gap-1">
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{label}</p>
-      <p className={`metric-value ${valueClass}`}>{value}</p>
-      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+    <div className={`glass-card p-6 flex flex-col gap-1 animate-fade-in-up ${delayClass}`}>
+      <p className="text-xs font-bold uppercase tracking-widest text-slate-400">{label}</p>
+      <p className={`metric-value mt-1 ${valueClass}`}>{value}</p>
+      {sub && <p className="text-xs text-slate-500 mt-2 font-medium">{sub}</p>}
     </div>
   );
 }
 
 function SectionHeader({ title, icon }: { title: string; icon: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 mb-4">
-      <div className="p-2 rounded-lg bg-sky-500/10 text-sky-400">{icon}</div>
-      <h2 className="text-lg font-bold text-white">{title}</h2>
+    <div className="flex items-center gap-3 mb-5">
+      <div className="p-2.5 rounded-xl bg-sky-500/10 text-sky-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]">{icon}</div>
+      <h2 className="text-lg font-bold text-white tracking-tight">{title}</h2>
     </div>
   );
 }
@@ -359,10 +359,10 @@ export default function Home() {
           {!isUninitialized && tab === "holdings" && (
             <div className="space-y-6">
               {/* Metrics Row */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-3 gap-5">
                 <MetricCard label="Net Asset Value" value={formatVnd(nav)} sub={`Initialized at ${formatVnd(initialCapital)}`} />
-                <MetricCard label="Available Cash" value={formatVnd(cash)} />
-                <MetricCard label="All-Time Return" value={formatPct(roi)} sub={`${roi >= 0 ? "+" : ""}${formatVnd(nav - initialCapital)}`} color={roi >= 0 ? "green" : "red"} />
+                <MetricCard label="Available Cash" value={formatVnd(cash)} delayClass="delay-100" />
+                <MetricCard label="All-Time Return" value={formatPct(roi)} sub={`${roi >= 0 ? "+" : ""}${formatVnd(nav - initialCapital)}`} color={roi >= 0 ? "green" : "red"} delayClass="delay-200" />
               </div>
 
               {holdingEntries.length === 0 ? (
@@ -372,7 +372,7 @@ export default function Home() {
               ) : (
                 <div className="grid grid-cols-2 gap-6">
                   {/* Positions Table */}
-                  <div className="glass-card p-5">
+                  <div className="glass-card p-6 animate-fade-in-up delay-300">
                     <SectionHeader title="Current Positions" icon={<BarChart2 size={18} />} />
                     <table className="data-table">
                       <thead><tr><th>Ticker</th><th>Shares</th><th>Value</th><th>Weight</th></tr></thead>
@@ -390,7 +390,7 @@ export default function Home() {
                   </div>
 
                   {/* Pie Chart */}
-                  <div className="glass-card p-5">
+                  <div className="glass-card p-6 flex flex-col animate-fade-in-up delay-400">
                     <SectionHeader title="Portfolio Allocation" icon={<BarChart2 size={18} />} />
                     <ResponsiveContainer width="100%" height={260}>
                       <PieChart>
@@ -409,7 +409,7 @@ export default function Home() {
 
               {/* Drift Monitor */}
               {driftData.length > 0 && (
-                <div className="glass-card p-5">
+                <div className="glass-card p-6 animate-fade-in-up delay-400">
                   <SectionHeader title="Allocation Drift Monitor" icon={<AlertTriangle size={18} />} />
                   <ResponsiveContainer width="100%" height={200}>
                     <BarChart data={driftData} layout="vertical">
@@ -426,7 +426,7 @@ export default function Home() {
               )}
 
               {/* Monte Carlo Risk */}
-              <div className="glass-card p-5">
+              <div className="glass-card p-6 animate-fade-in-up delay-200">
                 <SectionHeader title="Monte Carlo Risk Analytics (VaR)" icon={<AlertTriangle size={18} />} />
                 <p className="text-sm text-slate-400 mb-4">Simulate 10,000 correlated price paths over 30 days based on historical volatility.</p>
                 <button className="btn btn-primary mb-4" onClick={handleRunMonteCarlo} disabled={mcLoading || holdingEntries.length === 0}>
@@ -476,17 +476,17 @@ export default function Home() {
                       <RefreshCw size={14} className={ecLoading ? "animate-spin" : ""} /> Recalculate
                     </button>
                   </div>
-                  <div className="grid grid-cols-5 gap-3">
+                  <div className="grid grid-cols-5 gap-4">
                     <MetricCard label="Total Return" value={formatPct(equityCurve.summary_stats.total_return_pct)} color={equityCurve.summary_stats.total_return_pct >= 0 ? "green" : "red"} />
-                    <MetricCard label="Ann. Return" value={formatPct(equityCurve.summary_stats.annualized_return_pct)} color={equityCurve.summary_stats.annualized_return_pct >= 0 ? "green" : "red"} />
-                    <MetricCard label="Ann. Volatility" value={`${equityCurve.summary_stats.annualized_vol_pct.toFixed(1)}%`} />
-                    <MetricCard label="Sharpe Ratio" value={equityCurve.summary_stats.sharpe_ratio.toFixed(2)} color={equityCurve.summary_stats.sharpe_ratio >= 1 ? "green" : equityCurve.summary_stats.sharpe_ratio >= 0 ? "default" : "red"} />
-                    <MetricCard label="Max Drawdown" value={`${equityCurve.summary_stats.max_drawdown_pct.toFixed(1)}%`} color="red" />
+                    <MetricCard label="Ann. Return" value={formatPct(equityCurve.summary_stats.annualized_return_pct)} color={equityCurve.summary_stats.annualized_return_pct >= 0 ? "green" : "red"} delayClass="delay-100" />
+                    <MetricCard label="Ann. Volatility" value={`${equityCurve.summary_stats.annualized_vol_pct.toFixed(1)}%`} delayClass="delay-200" />
+                    <MetricCard label="Sharpe Ratio" value={equityCurve.summary_stats.sharpe_ratio.toFixed(2)} color={equityCurve.summary_stats.sharpe_ratio >= 1 ? "green" : equityCurve.summary_stats.sharpe_ratio >= 0 ? "default" : "red"} delayClass="delay-300" />
+                    <MetricCard label="Max Drawdown" value={`${equityCurve.summary_stats.max_drawdown_pct.toFixed(1)}%`} color="red" delayClass="delay-400" />
                   </div>
 
                   {/* Equity Curve Chart */}
                   {equityCurve.portfolio_nav.length > 1 && (
-                    <div className="glass-card p-5">
+                    <div className="glass-card p-6 animate-fade-in-up delay-200">
                       <SectionHeader title="Portfolio NAV vs. VN30 ETF Benchmark" icon={<TrendingUp size={18} />} />
                       <ResponsiveContainer width="100%" height={280}>
                         <LineChart data={equityCurve.portfolio_nav.map(p => {
@@ -511,7 +511,7 @@ export default function Home() {
 
                   {/* Rolling 60-Day Sharpe */}
                   {equityCurve.rolling_sharpe_portfolio.length > 1 && (
-                    <div className="glass-card p-5">
+                    <div className="glass-card p-6 animate-fade-in-up delay-300">
                       <SectionHeader title="Rolling 60-Day Sharpe Ratio" icon={<TrendingUp size={18} />} />
                       <p className="text-xs text-slate-500 mb-3">A Sharpe above 1.0 indicates risk-adjusted outperformance. Dashed orange = VN30 ETF benchmark.</p>
                       <ResponsiveContainer width="100%" height={200}>
@@ -536,7 +536,7 @@ export default function Home() {
 
                   {/* Stress Tests */}
                   {equityCurve.stress_results.length > 0 && (
-                    <div className="glass-card p-5">
+                    <div className="glass-card p-6 animate-fade-in-up delay-400">
                       <SectionHeader title="Historical Stress Test" icon={<AlertTriangle size={18} />} />
                       <p className="text-xs text-slate-500 mb-4">Simulates the impact of past market crises on your <em>current</em> portfolio weights.</p>
                       <table className="data-table">
@@ -559,7 +559,7 @@ export default function Home() {
               )}
 
               {/* Trade Ledger */}
-              <div className="glass-card p-5">
+              <div className="glass-card p-6 animate-fade-in-up delay-200">
                 <SectionHeader title="Trade History" icon={<TrendingUp size={18} />} />
                 {portfolio?.ledger && portfolio.ledger.length > 0 ? (
                   <table className="data-table">
@@ -591,7 +591,7 @@ export default function Home() {
           {!isUninitialized && tab === "terminal" && (
             <div className="space-y-6">
               {/* Screener */}
-              <div className="glass-card p-5">
+              <div className="glass-card p-6 animate-fade-in-up">
                 <SectionHeader title="VN100 Stock Screener" icon={<Bot size={18} />} />
                 <p className="text-sm text-slate-400 mb-4">Pre-filter your selected universe by Sharpe ratio and momentum before optimization.</p>
                 <button className="btn btn-primary mb-4" onClick={handleRunScreener} disabled={screenerLoading || !selectedTickers.length}>
@@ -624,7 +624,7 @@ export default function Home() {
               </div>
 
               {/* Optimization Engine */}
-              <div className="glass-card p-5">
+              <div className="glass-card p-6 animate-fade-in-up delay-100">
                 <SectionHeader title="Rebalance Engine" icon={<Bot size={18} />} />
                 <p className="text-sm text-slate-400 mb-4">
                   Click optimize to calculate the mathematically optimal portfolio, then review and confirm the proposed trades.
