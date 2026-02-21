@@ -10,6 +10,7 @@ import os
 import json
 import io
 from fpdf import FPDF
+import base64
 
 # --- Page Configuration ---
 st.set_page_config(page_title="VN Robo-Advisor Live", page_icon="📈", layout="wide")
@@ -642,14 +643,11 @@ with tab2:
         pdf_holdings = {k: {"shares": v, "value": display_holding_values.get(k, 0)} for k, v in holdings.items() if v > 0}
         pdf_stream = export_tearsheet(display_nav, total_roi, json.dumps(pdf_holdings), cash)
         
-        st.download_button(
-            label="📄 Download PDF Tearsheet",
-            data=pdf_stream,
-            file_name=f"RoboAdvisor_Tearsheet_{datetime.now().strftime('%Y%m%d')}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-        
+        # Use base64 HTML anchor to bypass Streamlit Cloud's broken media server filename handling
+        b64_pdf = base64.b64encode(pdf_stream).decode('utf-8')
+        pdf_filename = f"RoboAdvisor_Tearsheet_{datetime.now().strftime('%Y%m%d')}.pdf"
+        href = f'<a href="data:application/pdf;base64,{b64_pdf}" download="{pdf_filename}" style="display:inline-block;padding:0.5rem 1rem;background-color:#FF4B4B;color:white;text-decoration:none;border-radius:0.5rem;font-weight:600;text-align:center;width:100%;">📄 Download PDF Tearsheet</a>'
+        st.markdown(href, unsafe_allow_html=True)
     if ledger.empty:
         st.info("No trading history yet. Run the Robo-Advisor to start tracking.")
     else:
