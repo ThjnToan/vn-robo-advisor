@@ -639,15 +639,46 @@ with tab2:
         st.subheader("Historical Tracking")
     
     with col_hdr_2b:
-        # Create a dictionary of holdings with their calculated current values for the PDF generator
         pdf_holdings = {k: {"shares": v, "value": display_holding_values.get(k, 0)} for k, v in holdings.items() if v > 0}
         pdf_stream = export_tearsheet(display_nav, total_roi, json.dumps(pdf_holdings), cash)
-        
-        # Use base64 HTML anchor to bypass Streamlit Cloud's broken media server filename handling
+        # Use a JS Blob in a sandboxed iframe to bypass Streamlit's HTML sanitizer 
+        # which strips the `download` attribute from anchor tags in st.markdown.
         b64_pdf = base64.b64encode(pdf_stream).decode('utf-8')
         pdf_filename = f"RoboAdvisor_Tearsheet_{datetime.now().strftime('%Y%m%d')}.pdf"
-        href = f'<a href="data:application/pdf;base64,{b64_pdf}" download="{pdf_filename}" style="display:inline-block;padding:0.5rem 1rem;background-color:#FF4B4B;color:white;text-decoration:none;border-radius:0.5rem;font-weight:600;text-align:center;width:100%;">📄 Download PDF Tearsheet</a>'
-        st.markdown(href, unsafe_allow_html=True)
+        dl_html = f"""
+        <style>
+          #dl-btn {{
+            display: inline-block; padding: 0.4rem 1rem;
+            background-color: #FF4B4B; color: white;
+            text-decoration: none; border-radius: 0.4rem;
+            font-weight: 600; font-size: 14px; cursor: pointer;
+            border: none; width: 100%; text-align: center;
+          }}
+          #dl-btn:hover {{ background-color: #cc2222; }}
+        </style>
+        <button id="dl-btn" onclick="downloadPDF()">📄 Download PDF Tearsheet</button>
+        <script>
+        function downloadPDF() {{
+          var b64 = "{b64_pdf}";
+          var byteChars = atob(b64);
+          var byteNums = new Uint8Array(byteChars.length);
+          for (var i = 0; i < byteChars.length; i++) {{
+            byteNums[i] = byteChars.charCodeAt(i);
+          }}
+          var blob = new Blob([byteNums], {{type: 'application/pdf'}});
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = "{pdf_filename}";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }}
+        </script>
+        """
+        import streamlit.components.v1 as components
+        components.html(dl_html, height=50)
     if ledger.empty:
         st.info("No trading history yet. Run the Robo-Advisor to start tracking.")
     else:
