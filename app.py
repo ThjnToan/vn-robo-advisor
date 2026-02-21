@@ -231,7 +231,12 @@ state, ledger = load_portfolio()
 with st.sidebar:
     st.header("Wallet Settings")
     if state is None:
-        initial_cap = st.number_input("Initial Deposit (VND)", min_value=1_000_000, value=1_000_000_000, step=100_000_000)
+        initial_cap_str = st.text_input("Initial Deposit (VND)", value="1,000,000,000")
+        try:
+            initial_cap = int(initial_cap_str.replace(',', '').replace('.', ''))
+        except ValueError:
+            st.error("Invalid number format. Defaulting to 1 Billion.")
+            initial_cap = 1000000000
         if st.button("Initialize Portfolio Wallet", type="primary"):
             state = init_portfolio(initial_cap)
             st.rerun()
