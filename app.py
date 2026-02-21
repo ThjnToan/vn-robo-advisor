@@ -686,6 +686,44 @@ with tab1:
                         st.plotly_chart(fig_hist, use_container_width=True)
                     else:
                         st.error("Not enough valid historical data to run simulations.")
+        # --- Allocation Drift Monitor ---
+        with st.expander("⚠️ Allocation Drift Monitor", expanded=False):
+            if "last_target_weights" not in st.session_state or not st.session_state.last_target_weights:
+                st.info("Run the Robo-Advisor rebalance engine at least once to track drift from your target allocation.")
+            else:
+                target_w = st.session_state.last_target_weights
+                total_stock_val = sum(display_holding_values.get(t, 0) for t in holdings)
+                total_val_incl_cash = total_stock_val + cash
+                
+                drift_rows = []
+                for ticker, target_pct in target_w.items():
+                    if ticker not in holdings:
+                        continue
+                    current_val = display_holding_values.get(ticker, 0)
+                    current_pct = (current_val / total_val_incl_cash) if total_val_incl_cash > 0 else 0
+                    drift = (current_pct - target_pct) * 100
+                    drift_rows.append({
+                        "Ticker": ticker,
+                        "Target %": f"{target_pct * 100:.1f}%",
+                        "Current %": f"{current_pct * 100:.1f}%",
+                        "Drift": drift,
+                        "Status": "🔴 REBALANCE" if abs(drift) > 5 else ("🟡 Watch" if abs(drift) > 2 else "🟢 OK")
+                    })
+                
+                if drift_rows:
+                    drift_df = pd.DataFrame(drift_rows)
+                    max_drift = drift_df['Drift'].abs().max()
+                    if max_drift > 5:
+                        st.error(f"⚠️ **Critical Drift Detected!** Max drift: {max_drift:.1f}%. Rebalancing recommended.")
+                    elif max_drift > 2:
+                        st.warning(f"📡 Minor drift detected ({max_drift:.1f}%). Monitor closely.")
+                    else:
+                        st.success("✅ Portfolio weights are well-aligned with target allocation.")
+                    st.dataframe(
+                        drift_df.style.format({"Drift": "{:+.2f}%"}),
+                        use_container_width=True, hide_index=True
+                    )
+
     else:
         st.info("Your portfolio is empty. Go to the Robo-Advisor tab to make your first investment!")
 
@@ -890,11 +928,89 @@ with tab2:
                 )
                 st.plotly_chart(fig_heat, use_container_width=True)
                 st.caption("Red = positively correlated (move together). Blue = negatively correlated (natural hedge). Ideal diversification = low correlation between holdings.")
+        
+        # --- Historical Stress Test ---
+        with st.expander("💥 Historical Stress Test — Tail Risk Scenarios", expanded=False):
+            SCENARIOS = {
+                "COVID Crash (Feb–Mar 2020)": ("2020-02-01", "2020-03-31"),
+                "Global Rate Hike Shock (2022)": ("2022-01-01", "2022-12-31"),
+                "Evergrande / VN Correction (Q4 2021)": ("2021-07-01", "2021-12-31"),
+            }
+            
+            held_stress_tickers = [t for t, s in holdings.items() if s > 0 and t in market_db.columns]
+            if not held_stress_tickers:
+                st.info("Your portfolio is empty — no stress test needed!")
+            else:
+                st.write("Applies the actual historical market returns from each crisis period to your current holdings to measure your hypothetical loss.")
+                stress_results = []
+                for scenario_name, (start_str, end_str) in SCENARIOS.items():
+                    try:
+                        start_dt = pd.to_datetime(start_str)
+                        end_dt = pd.to_datetime(end_str)
+                        period_data = market_db[held_stress_tickers].loc[start_dt:end_dt]
+                        if len(period_data) < 2:
+                            continue
+                        period_returns = (period_data.iloc[-1] / period_data.iloc[0]) - 1
+                        total_val = sum(holdings[t] * market_db[t].iloc[-1] for t in held_stress_tickers)
+                        if total_val <= 0:
+                            continue
+                        weights = {t: (holdings[t] * market_db[t].iloc[-1]) / total_val for t in held_stress_tickers}
+                        portfolio_return = sum(weights[t] * period_returns.get(t, 0) for t in held_stress_tickers)
+                        hypothetical_pnl = portfolio_return * display_nav
+                        stress_results.append({
+                            "Scenario": scenario_name,
+                            "Period": f"{start_str} → {end_str}",
+                            "Hypothetical Return": f"{portfolio_return * 100:.1f}%",
+                            "Projected P&L (VND)": f"{hypothetical_pnl:,.0f}",
+                            "Severity": "🔴 Severe" if portfolio_return < -0.20 else ("🟡 Moderate" if portfolio_return < -0.10 else "🟢 Mild")
+                        })
+                    except Exception:
+                        continue
+                
+                if stress_results:
+                    st.dataframe(pd.DataFrame(stress_results), use_container_width=True, hide_index=True)
+                    st.caption("Stress test applies the actual historical price moves from each crisis window to your current portfolio weights. Past crises do not guarantee identical future crashes.")
+                else:
+                    st.info("Historical price data not available for the stress test periods. Market data may not extend back far enough.")
 
 with tab3:
     st.subheader("Robo-Advisor Terminal")
     st.write("Clicking the optimization button will calculate the mathematically ideal portfolio based on the last 252 trading days, and automatically buy/sell shares using your available cash.")
     
+    # --- VN100 Stock Screener ---
+    with st.expander("🔍 VN100 Universe Screener — Pre-filter by Sharpe & Momentum", expanded=False):
+        st.write("Rank all available stocks in your selected universe by their historical risk-adjusted return (Sharpe Ratio) and recent 3-month momentum before feeding them to the optimizer.")
+        
+        screen_tickers = [t for t in selected_tickers if t in market_db.columns]
+        if len(screen_tickers) < 2:
+            st.info("Select at least 2 tickers in the sidebar to run the screener.")
+        else:
+            prices_screen = market_db[screen_tickers].tail(252)
+            returns_screen = prices_screen.pct_change().dropna()
+            
+            screen_rows = []
+            for t in screen_tickers:
+                ret_1y = (prices_screen[t].iloc[-1] / prices_screen[t].iloc[0] - 1) * 100
+                ret_3m = (prices_screen[t].iloc[-1] / prices_screen[t].iloc[-63] - 1) * 100 if len(prices_screen) >= 63 else 0
+                ann_ret = returns_screen[t].mean() * 252 * 100
+                ann_vol = returns_screen[t].std() * (252 ** 0.5) * 100
+                sharpe = (ann_ret - 4.5) / ann_vol if ann_vol > 0 else 0
+                sector = SECTOR_MAPPER.get(t, "Other")
+                screen_rows.append({
+                    "Ticker": t, "Sector": sector,
+                    "Sharpe (1Y)": round(sharpe, 2),
+                    "Return 3M %": round(ret_3m, 1),
+                    "Return 1Y %": round(ret_1y, 1),
+                    "Volatility %": round(ann_vol, 1),
+                    "Grade": "⭐ Top Pick" if sharpe > 1.5 and ret_3m > 5 else ("✅ Good" if sharpe > 0.8 else "⚠️ Weak")
+                })
+            
+            screen_df = pd.DataFrame(screen_rows).sort_values("Sharpe (1Y)", ascending=False)
+            st.dataframe(screen_df, use_container_width=True, hide_index=True)
+            st.caption("Sharpe computed using 4.5% risk-free rate. 'Top Pick' = Sharpe > 1.5 AND positive 3-month momentum.")
+    
+    st.divider()
+
     # Tactical Views UI
     st.write("### 🧠 Black-Litterman Tactical Views")
     st.caption("Optional: Input your personal expected returns for specific stocks to override the purely historical Markowitz baseline.")
@@ -939,6 +1055,9 @@ with tab3:
                 
                 # Execute Virtual Trades
                 execute_rebalance(market_db, state, ledger, target_w)
+                
+                # Persist target weights for Drift Monitor
+                st.session_state.last_target_weights = dict(target_w)
                 
                 # Reload UI
                 st.rerun()
