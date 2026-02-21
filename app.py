@@ -218,7 +218,7 @@ def execute_rebalance(market_data, state, ledger, target_weights_dict):
         st.info("Portfolio already matches optimal weights. No trades needed.")
 
 # --- App Layout ---
-st.title("🇻🇳 VN Live Robo-Advisor Tracker")
+st.title("🇻🇳 Live Robo-Advisor Tracker")
 st.markdown("A persistent portfolio tracker powered by the Markowitz Mean-Variance optimization engine.")
 
 # Database Initialization
