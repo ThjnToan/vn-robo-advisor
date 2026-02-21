@@ -435,6 +435,62 @@ def export_tearsheet(nav_value, roi_pct, holdings_json, cash_val):
     pdf_bytes = pdf.output()
     return bytes(pdf_bytes)
 
+@st.cache_data(show_spinner=False)
+def compute_efficient_frontier(tickers_tuple, latest_date_str, n_portfolios=3000):
+    """Simulate n_portfolios random weight combinations and compute the efficient frontier."""
+    market_data = load_market_data()
+    tickers = list(tickers_tuple)
+    latest_date = pd.to_datetime(latest_date_str)
+    
+    prices = market_data[tickers].loc[:latest_date].tail(252)
+    returns = prices.pct_change().dropna()
+    
+    if returns.shape[0] < 30 or returns.shape[1] < 2:
+        return None
+    
+    mu_daily = returns.mean()
+    cov_daily = returns.cov()
+    ann_factor = 252
+    
+    np.random.seed(99)
+    rand_vols, rand_rets, rand_sharpes = [], [], []
+    rand_weights_list = []
+    
+    for _ in range(n_portfolios):
+        w = np.random.dirichlet(np.ones(len(tickers)))
+        p_ret = float(np.dot(w, mu_daily) * ann_factor)
+        p_vol = float(np.sqrt(np.dot(w.T, np.dot(cov_daily.values * ann_factor, w))))
+        p_sharpe = p_ret / p_vol if p_vol > 0 else 0
+        rand_rets.append(p_ret)
+        rand_vols.append(p_vol)
+        rand_sharpes.append(p_sharpe)
+        rand_weights_list.append(w)
+    
+    # Trace the actual efficient frontier line via PyPortfolioOpt
+    frontier_vols, frontier_rets = [], []
+    try:
+        mu_pf = expected_returns.mean_historical_return(prices)
+        S_pf = risk_models.sample_cov(prices)
+        target_rets = np.linspace(min(rand_rets) * 1.05, max(rand_rets) * 0.95, 40)
+        for r in target_rets:
+            try:
+                ef = EfficientFrontier(mu_pf, S_pf, weight_bounds=(0, 0.40))
+                ef.efficient_return(r)
+                pw = ef.clean_weights()
+                w_arr = np.array([pw.get(t, 0) for t in tickers])
+                p_vol = float(np.sqrt(np.dot(w_arr.T, np.dot(cov_daily.values * ann_factor, w_arr))))
+                frontier_vols.append(p_vol)
+                frontier_rets.append(float(r))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    return {
+        'rand_vols': rand_vols, 'rand_rets': rand_rets, 'rand_sharpes': rand_sharpes,
+        'frontier_vols': frontier_vols, 'frontier_rets': frontier_rets
+    }
+
 # --- App Layout ---
 st.title("🇻🇳 Live Robo-Advisor Tracker")
 st.markdown("A persistent portfolio tracker powered by the Markowitz Mean-Variance optimization engine.")
@@ -810,6 +866,89 @@ with tab3:
                 # Reload UI
                 st.rerun()
                 
+    st.divider()
+    
+    # --- Efficient Frontier Visualization ---
+    with st.expander("📈 Efficient Frontier — Feasible Portfolio Universe", expanded=False):
+        if not selected_tickers or len(selected_tickers) < 2:
+            st.info("Select at least 2 tickers in the sidebar to plot the Efficient Frontier.")
+        else:
+            valid_ef_tickers = [t for t in selected_tickers if t in market_db.columns]
+            if len(valid_ef_tickers) < 2:
+                st.info("Not enough valid market data for the selected tickers.")
+            else:
+                with st.spinner("Simulating 3,000 random portfolios across the risk-return plane..."):
+                    ef_data = compute_efficient_frontier(tuple(sorted(valid_ef_tickers)), str(latest_date))
+                
+                if ef_data:
+                    # Calculate current portfolio's position on the frontier
+                    curr_vol, curr_ret = None, None
+                    if holdings:
+                        prices_ef = market_db[valid_ef_tickers].tail(252)
+                        rets_ef = prices_ef.pct_change().dropna()
+                        total_val = sum(holdings.get(t, 0) * market_db[t].iloc[-1] for t in valid_ef_tickers if t in holdings)
+                        if total_val > 0:
+                            w_curr = np.array([holdings.get(t, 0) * market_db[t].iloc[-1] / total_val for t in valid_ef_tickers])
+                            curr_ret = float(np.dot(w_curr, rets_ef.mean()) * 252)
+                            curr_vol = float(np.sqrt(np.dot(w_curr.T, np.dot(rets_ef.cov().values * 252, w_curr))))
+                    
+                    fig_ef = go.Figure()
+                    
+                    # 1. Random portfolios scatter (feasible set cloud)
+                    fig_ef.add_trace(go.Scatter(
+                        x=[v * 100 for v in ef_data['rand_vols']],
+                        y=[r * 100 for r in ef_data['rand_rets']],
+                        mode='markers',
+                        marker=dict(
+                            color=ef_data['rand_sharpes'],
+                            colorscale='Viridis',
+                            size=4, opacity=0.5,
+                            colorbar=dict(title='Sharpe Ratio', thickness=12, x=1.01)
+                        ),
+                        name='Random Portfolios',
+                        hovertemplate='Vol: %{x:.1f}%<br>Return: %{y:.1f}%<extra></extra>'
+                    ))
+                    
+                    # 2. Efficient frontier line
+                    if ef_data['frontier_vols']:
+                        fig_ef.add_trace(go.Scatter(
+                            x=[v * 100 for v in ef_data['frontier_vols']],
+                            y=[r * 100 for r in ef_data['frontier_rets']],
+                            mode='lines',
+                            line=dict(color='white', width=3),
+                            name='Efficient Frontier',
+                            hovertemplate='Vol: %{x:.1f}%<br>Return: %{y:.1f}%<extra></extra>'
+                        ))
+                    
+                    # 3. Current portfolio star marker
+                    if curr_vol is not None and curr_ret is not None:
+                        fig_ef.add_trace(go.Scatter(
+                            x=[curr_vol * 100], y=[curr_ret * 100],
+                            mode='markers+text',
+                            marker=dict(symbol='star', size=20, color='gold', line=dict(color='black', width=1)),
+                            text=['Your Portfolio'], textposition='top center',
+                            textfont=dict(color='gold', size=12),
+                            name='Your Portfolio',
+                            hovertemplate='<b>Your Portfolio</b><br>Vol: %{x:.1f}%<br>Return: %{y:.1f}%<extra></extra>'
+                        ))
+                    
+                    fig_ef.update_layout(
+                        title=dict(text='Mean-Variance Efficient Frontier', font=dict(size=16)),
+                        xaxis_title='Annualised Volatility (Risk) %',
+                        yaxis_title='Annualised Return %',
+                        plot_bgcolor='#0e1117',
+                        paper_bgcolor='#0e1117',
+                        font=dict(color='white'),
+                        margin=dict(l=0, r=0, t=50, b=0),
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                    )
+                    fig_ef.update_xaxes(gridcolor='#2d2d2d')
+                    fig_ef.update_yaxes(gridcolor='#2d2d2d')
+                    st.plotly_chart(fig_ef, use_container_width=True)
+                    st.caption("Each dot is one randomly weighted portfolio. Color = Sharpe Ratio (yellow = higher). The white line traces the mathematically optimal Efficient Frontier. The ★ gold star is your current Robo-Advisor allocation.")
+                else:
+                    st.error("Could not compute the Efficient Frontier with the available data.")
+    
     st.divider()
     st.subheader("Transaction Ledger (Editable)")
     if not ledger.empty:
