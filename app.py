@@ -382,7 +382,8 @@ def run_monte_carlo_var(prices_df, holdings_dict, current_cash, num_simulations=
     
     return final_portfolio_values, var_95_loss, cvar_95_loss, var_95_value, current_nav
 
-def export_tearsheet(nav_value, roi_pct, holdings_dict, cash_val):
+@st.cache_data(show_spinner=False)
+def export_tearsheet(nav_value, roi_pct, holdings_json, cash_val):
     """ Builds a pure-Python PDF Tearsheet in a RAM buffer using fpdf2 """
     pdf = FPDF()
     pdf.add_page()
@@ -415,6 +416,7 @@ def export_tearsheet(nav_value, roi_pct, holdings_dict, cash_val):
     
     # Table Body
     pdf.set_font("helvetica", "", 12)
+    holdings_dict = json.loads(holdings_json)
     for ticker, val in holdings_dict.items():
         pdf.cell(60, 10, str(ticker), border=1, align="C")
         pdf.cell(60, 10, f"{val['shares']:,.0f}", border=1, align="C")
@@ -638,7 +640,7 @@ with tab2:
     with col_hdr_2b:
         # Create a dictionary of holdings with their calculated current values for the PDF generator
         pdf_holdings = {k: {"shares": v, "value": display_holding_values.get(k, 0)} for k, v in holdings.items() if v > 0}
-        pdf_stream = export_tearsheet(display_nav, total_roi, pdf_holdings, cash)
+        pdf_stream = export_tearsheet(display_nav, total_roi, json.dumps(pdf_holdings), cash)
         
         st.download_button(
             label="📄 Download PDF Tearsheet",
