@@ -121,6 +121,26 @@ def load_market_data():
     df = df * 1000
     return df
 
+def fetch_live_prices(tickers):
+    """
+    Pings the VCI server for the current day's live trading bar.
+    Returns a dictionary of ticker -> live_price.
+    """
+    live_prices = {}
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    for ticker in tickers:
+        try:
+            # We fetch exactly today's bar. The 'close' value of an active daily bar is the live price.
+            stock = Vnstock().stock(symbol=ticker, source='VCI')
+            live_df = stock.quote.history(start=today_str, end=today_str)
+            if not live_df.empty:
+                # vnstock returns prices in shorthand thousands. Convert to true VND.
+                live_prices[ticker] = live_df['close'].iloc[-1] * 1000
+        except Exception as e:
+            print(f"Failed to fetch live price for {ticker}: {e}")
+            pass
+    return live_prices
+
 # --- State Management ---
 def init_portfolio(initial_capital):
     state = {
@@ -446,15 +466,46 @@ for ticker, shares in holdings.items():
         nav += val
 
 with tab1:
-    st.subheader("Live Portfolio Snapshot")
-    st.caption(f"Based on last market close: {latest_date.strftime('%Y-%m-%d')}")
+    col_hdr1, col_hdr2 = st.columns([3, 1])
+    with col_hdr1:
+        st.subheader("Live Portfolio Snapshot")
+        st.caption(f"Historical EOD Baseline: {latest_date.strftime('%Y-%m-%d')}")
+    with col_hdr2:
+        if st.button("⚡ Ping Live NAV (VND)", use_container_width=True):
+            with st.spinner("Pinging VCI servers for real-time orderbook..."):
+                active_tickers = list(holdings.keys())
+                live_prices = fetch_live_prices(active_tickers)
+                st.session_state.live_prices_cache = live_prices
+                st.session_state.live_timestamp = datetime.now().strftime("%H:%M:%S")
+                st.rerun()
+
+    # Determine if we are showing Live or EOD NAV
+    showing_live = "live_prices_cache" in st.session_state
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Net Asset Value (NAV)", f"{nav:,.0f} ₫")
-    col2.metric("Available Cash", f"{cash:,.0f} ₫")
+    display_nav = cash
+    display_holding_values = {}
     
-    total_roi = ((nav / state['initial_capital']) - 1) * 100
-    col3.metric("All-Time Return", f"{total_roi:.2f} %", f"{nav - state['initial_capital']:,.0f} ₫")
+    if showing_live:
+        for ticker, shares in holdings.items():
+            price = st.session_state.live_prices_cache.get(ticker, market_db.loc[latest_date, ticker])
+            val = shares * price
+            display_holding_values[ticker] = val
+            display_nav += val
+    else:
+        display_nav = nav
+        display_holding_values = holding_values
+        
+    st.metric(
+        label=f"Net Asset Value (NAV) {'[LIVE - ' + st.session_state.live_timestamp + ']' if showing_live else '[End of Day]'}", 
+        value=f"{display_nav:,.0f} ₫",
+        delta=f"{display_nav - nav:,.0f} ₫ (Intraday Change)" if showing_live else None
+    )
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Available Cash", f"{cash:,.0f} ₫")
+    
+    total_roi = ((display_nav / state['initial_capital']) - 1) * 100
+    col2.metric("All-Time Return", f"{total_roi:.2f} %", f"{display_nav - state['initial_capital']:,.0f} ₫")
     
     st.divider()
     
@@ -463,7 +514,7 @@ with tab1:
         with colA:
             st.write("### Current Positions")
             pos_df = pd.DataFrame([
-                {"Ticker": k, "Shares": v, "Current Value (VND)": holding_values[k]}
+                {"Ticker": k, "Shares": v, "Current Value (VND)": display_holding_values[k]}
                 for k, v in holdings.items()
             ])
             
@@ -478,8 +529,8 @@ with tab1:
             
         with colB:
             # Add cash to pie chart
-            labels = list(holding_values.keys()) + ["Cash"]
-            values = list(holding_values.values()) + [cash]
+            labels = list(display_holding_values.keys()) + ["Cash"]
+            values = list(display_holding_values.values()) + [cash]
             fig = go.Figure(data=[go.Pie(
                 labels=labels, 
                 values=values, 
