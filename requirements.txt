@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 plotly
-PyPortfolioOpt
+PyPortfolioOpt>=1.5.5
 scikit-learn
 vnstock
 matplotlib
