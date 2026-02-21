@@ -813,6 +813,83 @@ with tab2:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_line, use_container_width=True)
+        
+        # --- Rolling Sharpe Ratio ---
+        with st.expander("📊 Rolling 60-Day Sharpe Ratio", expanded=False):
+            RISK_FREE_DAILY = 0.045 / 252  # 4.5% annual Vietnamese risk-free rate
+            
+            # Portfolio daily returns from NAV
+            port_daily = history_df['NAV'].pct_change().dropna()
+            
+            if len(port_daily) >= 60:
+                rolling_ret = port_daily.rolling(60).mean() * 252
+                rolling_std = port_daily.rolling(60).std() * (252 ** 0.5)
+                rolling_sharpe = (rolling_ret - 0.045) / rolling_std.replace(0, float('nan'))
+                
+                # Benchmark rolling Sharpe (VN30 ETF)
+                bench_daily = bench_values.pct_change().dropna()
+                bench_rolling_ret = bench_daily.rolling(60).mean() * 252
+                bench_rolling_std = bench_daily.rolling(60).std() * (252 ** 0.5)
+                bench_rolling_sharpe = (bench_rolling_ret - 0.045) / bench_rolling_std.replace(0, float('nan'))
+                
+                fig_sharpe = go.Figure()
+                fig_sharpe.add_trace(go.Scatter(
+                    x=rolling_sharpe.dropna().index, y=rolling_sharpe.dropna().values,
+                    mode='lines', name='Portfolio Sharpe (60d)',
+                    line=dict(color='#00CC96', width=2),
+                    hovertemplate='<b>Portfolio</b><br>Date: %{x}<br>Sharpe: %{y:.2f}<extra></extra>'
+                ))
+                fig_sharpe.add_trace(go.Scatter(
+                    x=bench_rolling_sharpe.dropna().index, y=bench_rolling_sharpe.dropna().values,
+                    mode='lines', name='VN30 ETF Sharpe (60d)',
+                    line=dict(color='#636EFA', width=2, dash='dot'),
+                    hovertemplate='<b>VN30 ETF</b><br>Date: %{x}<br>Sharpe: %{y:.2f}<extra></extra>'
+                ))
+                fig_sharpe.add_hline(y=1.0, line_dash='dash', line_color='gold',
+                    annotation_text='Sharpe = 1.0 (Good)', annotation_position='bottom right')
+                fig_sharpe.add_hline(y=0.0, line_dash='dash', line_color='red',
+                    annotation_text='Sharpe = 0.0 (Break-even)', annotation_position='top right')
+                fig_sharpe.update_layout(
+                    title='Rolling 60-Day Annualised Sharpe Ratio vs VN30 ETF',
+                    yaxis_title='Sharpe Ratio',
+                    hovermode='x unified',
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                )
+                st.plotly_chart(fig_sharpe, use_container_width=True)
+                st.caption("Sharpe Ratio computed using 4.5% annual risk-free rate (Vietnamese T-Bill equivalent). A Sharpe > 1.0 indicates exceptional risk-adjusted returns.")
+            else:
+                st.info("Need at least 60 trading days of portfolio history to calculate rolling Sharpe. Run more rebalances to populate history.")
+        
+        # --- Correlation Heatmap ---
+        with st.expander("🔥 Holdings Correlation Matrix", expanded=False):
+            held_tickers = [t for t, s in holdings.items() if s > 0 and t in market_db.columns]
+            if len(held_tickers) < 2:
+                st.info("Hold at least 2 stocks to view the correlation matrix.")
+            else:
+                corr_matrix = market_db[held_tickers].tail(252).pct_change().dropna().corr()
+                
+                # Build annotated heatmap
+                z_vals = corr_matrix.values.round(2).tolist()
+                fig_heat = go.Figure(data=go.Heatmap(
+                    z=z_vals,
+                    x=held_tickers,
+                    y=held_tickers,
+                    colorscale='RdBu_r',
+                    zmid=0,
+                    zmin=-1, zmax=1,
+                    text=[[f"{v:.2f}" for v in row] for row in z_vals],
+                    texttemplate="%{text}",
+                    hovertemplate='%{y} vs %{x}<br>Correlation: %{z:.2f}<extra></extra>',
+                    colorbar=dict(title='Correlation', thickness=14)
+                ))
+                fig_heat.update_layout(
+                    title='Pairwise Return Correlation Matrix (252-day)',
+                    margin=dict(l=0, r=0, t=50, b=0),
+                    xaxis=dict(side='bottom'),
+                )
+                st.plotly_chart(fig_heat, use_container_width=True)
+                st.caption("Red = positively correlated (move together). Blue = negatively correlated (natural hedge). Ideal diversification = low correlation between holdings.")
 
 with tab3:
     st.subheader("Robo-Advisor Terminal")
