@@ -428,11 +428,9 @@ def export_tearsheet(nav_value, roi_pct, holdings_dict, cash_val):
     pdf.set_font("helvetica", "", 10)
     pdf.multi_cell(0, 6, "This quantitative tearsheet is generated autonomously by the Capstone Markowitz Mean-Variance engine. Past performance does not guarantee future returns. The underlying VN100 Covariance matrix dynamically shifts based on real-time market volatility.")
     
-    # Write to RAM buffer
-    pdf_buffer = io.BytesIO()
-    pdf.output(pdf_buffer)
-    pdf_buffer.seek(0)
-    return pdf_buffer
+    # Generate raw byte array directly to bypass Streamlit UUID bugs
+    pdf_bytes = pdf.output()
+    return bytes(pdf_bytes)
 
 # --- App Layout ---
 st.title("🇻🇳 Live Robo-Advisor Tracker")
