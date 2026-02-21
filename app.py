@@ -231,7 +231,15 @@ state, ledger = load_portfolio()
 with st.sidebar:
     st.header("Wallet Settings")
     if state is None:
-        initial_cap_str = st.text_input("Initial Deposit (VND)", value="1,000,000,000")
+        if "init_cap_raw" not in st.session_state:
+            st.session_state.init_cap_raw = "1,000,000,000"
+            
+        def format_cap():
+            val = st.session_state.init_cap_raw.replace(',', '').replace('.', '').strip()
+            if val.isdigit():
+                st.session_state.init_cap_raw = f"{int(val):,}"
+
+        initial_cap_str = st.text_input("Initial Deposit (VND)", key="init_cap_raw", on_change=format_cap)
         try:
             initial_cap = int(initial_cap_str.replace(',', '').replace('.', ''))
         except ValueError:
