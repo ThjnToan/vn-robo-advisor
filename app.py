@@ -8,6 +8,8 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import black_litterman
 import os
 import json
+import io
+from fpdf import FPDF
 
 # --- Page Configuration ---
 st.set_page_config(page_title="VN Robo-Advisor Live", page_icon="📈", layout="wide")
@@ -377,7 +379,60 @@ def run_monte_carlo_var(prices_df, holdings_dict, current_cash, num_simulations=
     var_95_loss = current_nav - var_95_value
     cvar_95_loss = current_nav - cvar_95_value
     
+    
     return final_portfolio_values, var_95_loss, cvar_95_loss, var_95_value, current_nav
+
+def export_tearsheet(nav_value, roi_pct, holdings_dict, cash_val):
+    """ Builds a pure-Python PDF Tearsheet in a RAM buffer using fpdf2 """
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header
+    pdf.set_font("helvetica", "B", 24)
+    pdf.cell(0, 15, "Robo-Advisor: Quantitative Tearsheet", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "I", 12)
+    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    
+    # Portfolio Snapshot
+    pdf.set_font("helvetica", "B", 16)
+    pdf.cell(0, 10, "1. Live Portfolio Snapshot", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 12)
+    pdf.cell(0, 8, f"Net Asset Value (NAV): {nav_value:,.0f} VND", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Available Cash: {cash_val:,.0f} VND", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"All-Time Return (ROI): {roi_pct:.2f}%", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    
+    # Holdings Table
+    pdf.set_font("helvetica", "B", 16)
+    pdf.cell(0, 10, "2. Current Allocations", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "B", 12)
+    
+    # Table Header
+    pdf.cell(60, 10, "Ticker", border=1, align="C")
+    pdf.cell(60, 10, "Shares", border=1, align="C")
+    pdf.cell(60, 10, "Value (VND)", border=1, align="C", new_x="LMARGIN", new_y="NEXT")
+    
+    # Table Body
+    pdf.set_font("helvetica", "", 12)
+    for ticker, val in holdings_dict.items():
+        pdf.cell(60, 10, str(ticker), border=1, align="C")
+        pdf.cell(60, 10, f"{val['shares']:,.0f}", border=1, align="C")
+        pdf.cell(60, 10, f"{val['value']:,.0f}", border=1, align="R", new_x="LMARGIN", new_y="NEXT")
+        
+    pdf.ln(10)
+    
+    # Risk Disclaimer
+    pdf.set_font("helvetica", "B", 16)
+    pdf.cell(0, 10, "3. Risk Disclosure", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 10)
+    pdf.multi_cell(0, 6, "This quantitative tearsheet is generated autonomously by the Capstone Markowitz Mean-Variance engine. Past performance does not guarantee future returns. The underlying VN100 Covariance matrix dynamically shifts based on real-time market volatility.")
+    
+    # Write to RAM buffer
+    pdf_buffer = io.BytesIO()
+    pdf.output(pdf_buffer)
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
 # --- App Layout ---
 st.title("🇻🇳 Live Robo-Advisor Tracker")
@@ -578,7 +633,23 @@ with tab1:
         st.info("Your portfolio is empty. Go to the Robo-Advisor tab to make your first investment!")
 
 with tab2:
-    st.subheader("Historical Tracking")
+    col_hdr_2a, col_hdr_2b = st.columns([3, 1])
+    with col_hdr_2a:
+        st.subheader("Historical Tracking")
+    
+    with col_hdr_2b:
+        # Create a dictionary of holdings with their calculated current values for the PDF generator
+        pdf_holdings = {k: {"shares": v, "value": display_holding_values.get(k, 0)} for k, v in holdings.items() if v > 0}
+        pdf_stream = export_tearsheet(display_nav, total_roi, pdf_holdings, cash)
+        
+        st.download_button(
+            label="📄 Download PDF Tearsheet",
+            data=pdf_stream,
+            file_name=f"RoboAdvisor_Tearsheet_{datetime.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+        
     if ledger.empty:
         st.info("No trading history yet. Run the Robo-Advisor to start tracking.")
     else:
