@@ -8,7 +8,7 @@ import json
 import os
 
 # --- Constants & Paths ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) # Root
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # Root
 DATA_FILE = os.path.join(BASE_DIR, "market_data.csv")
 
 SESSION_DIR = os.path.join(BASE_DIR, "data", "sessions")
